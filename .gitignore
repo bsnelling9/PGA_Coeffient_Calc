@@ -1,0 +1,20 @@
+# Local calibration data and outputs
+Brodie_Cal_Output.txt
+Cal_Input.txt
+TI_Cal_Output.txt
+Old Greg Data/
+
+# Python environment and runtime artifacts
+.python-version
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv
+
+# Specific scripts/documentation to ignore
+pga_coefficient_calculator.py
+.pga_coefficient_calculator.py
+TIREADME.md
