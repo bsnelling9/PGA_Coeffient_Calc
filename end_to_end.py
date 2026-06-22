@@ -2,9 +2,6 @@ import os
 import configparser
 
 
-# ─────────────────────────────────────────────
-#  Constants
-# ─────────────────────────────────────────────
 ADC_RES       = 24
 NORM_DATA     = 2 ** (ADC_RES - 2)   # 2^22
 NORM_COEFF    = 2 ** 30
@@ -19,9 +16,6 @@ CAL_DATA_DIR  = os.path.join(BASE_DIR, '..', 'Calibration_Data')
 CAL_OUTPUT    = os.path.join(BASE_DIR, 'Brodie_Cal_Output.txt')
 
 
-# ─────────────────────────────────────────────
-#  Helpers
-# ─────────────────────────────────────────────
 def signed_24_to_int(hex_str):
     val = int(hex_str, 16)
     if val & 0x800000:
@@ -41,9 +35,6 @@ def dac_to_psi(dac_code):
     return voltage_to_psi(dac_to_voltage(dac_code))
 
 
-# ─────────────────────────────────────────────
-#  Load coefficients and settings from Cal Output
-# ─────────────────────────────────────────────
 def load_cal_output(filepath):
     settings = {}
     coeffs   = {}
@@ -87,10 +78,6 @@ def load_cal_output(filepath):
 
     return tadc_gain, tadc_offset, padc_gain, padc_offset, coeffs
 
-
-# ─────────────────────────────────────────────
-#  Load DUT file
-# ─────────────────────────────────────────────
 def load_dut_file(pressure_code, serial_number):
     dut_path = os.path.join(CAL_DATA_DIR, pressure_code, f'{serial_number}.txt')
 
@@ -110,24 +97,23 @@ def load_dut_file(pressure_code, serial_number):
             continue
         parts = value.strip('"').split('\t')
         if len(parts) == 4:
-            t_idx    = int(key[1])
-            p_idx    = int(key[3])
-            temp_c   = float(parts[0])
+            t_idx = int(key[1])
+            p_idx = int(key[3])
+            temp_c = float(parts[0])
             tadc_val = int(parts[1])
             pres_psi = float(parts[2])
             padc_val = int(parts[3])
             points.append({
-                'label':    f'T{t_idx}P{p_idx}',
-                'temp_c':   temp_c,
-                'tadc':     tadc_val,
+                'label': f'T{t_idx}P{p_idx}',
+                'temp_c': temp_c,
+                'tadc': tadc_val,
                 'pres_psi': pres_psi,
-                'padc':     padc_val,
+                'padc': padc_val,
             })
 
     if 'DAC_DATA' not in config:
         raise ValueError("DAC_DATA section not found in DUT file")
 
-    # Build expected DAC codes per T row
     dac_rows = {}
     for key, value in config['DAC_DATA'].items():
         key = key.upper()
@@ -135,7 +121,6 @@ def load_dut_file(pressure_code, serial_number):
             t_idx = int(key[1])
             dac_rows[t_idx] = [int(v.strip()) for v in value.strip('"').split('\t')]
 
-    # Attach expected DAC code and voltage to each point
     p_counts = {}
     for pt in points:
         t_idx = int(pt['label'][1])
@@ -147,23 +132,17 @@ def load_dut_file(pressure_code, serial_number):
 
         if t_idx in dac_rows and col < len(dac_rows[t_idx]):
             pt['expected_dac'] = dac_rows[t_idx][col]
-            pt['expected_v']   = dac_to_voltage(pt['expected_dac'])
+            pt['expected_v'] = dac_to_voltage(pt['expected_dac'])
             pt['expected_psi'] = dac_to_psi(pt['expected_dac'])
         else:
             pt['expected_dac'] = 0
-            pt['expected_v']   = 0.0
+            pt['expected_v'] = 0.0
             pt['expected_psi'] = 0.0
 
     return points
 
 
-# ─────────────────────────────────────────────
-#  Polynomial computation
-# ─────────────────────────────────────────────
-def compute_dac(tadc_val, padc_val,
-                tadc_gain, tadc_offset,
-                padc_gain, padc_offset,
-                coeffs, t_points, p_points):
+def compute_dac(tadc_val, padc_val, tadc_gain, tadc_offset, padc_gain, padc_offset, coeffs, t_points, p_points):
 
     ts = tadc_val * tadc_gain + tadc_offset
     ps = padc_val * padc_gain + padc_offset
@@ -180,17 +159,11 @@ def compute_dac(tadc_val, padc_val,
 
     return int(round(result * NORM_DATA))
 
-
-# ─────────────────────────────────────────────
-#  Run test for one gain setting
-# ─────────────────────────────────────────────
 def run_test(points, tadc_gain, tadc_offset, padc_gain, padc_offset, coeffs, gain_vv):
 
     t_points = max(int(pt['label'][1]) for pt in points) + 1
     p_points = max(int(pt['label'][3]) for pt in points) + 1
 
-    # Apply P_GAIN_SELECT scaling to padc_gain
-    # 200 V/V or 400 V/V scales the effective padc_gain
     gain_scale = gain_vv / 200
     effective_padc_gain = padc_gain * gain_scale
 
@@ -203,26 +176,22 @@ def run_test(points, tadc_gain, tadc_offset, padc_gain, padc_offset, coeffs, gai
             coeffs, t_points, p_points
         )
 
-        computed_v   = dac_to_voltage(computed_dac)
+        computed_v = dac_to_voltage(computed_dac)
         computed_psi = dac_to_psi(computed_dac)
-        error_psi    = abs(pt['expected_psi'] - computed_psi)
-        error_pct    = (error_psi / FULL_SCALE_P) * 100
+        error_psi = abs(pt['expected_psi'] - computed_psi)
+        error_pct = (error_psi / FULL_SCALE_P) * 100
 
         results.append({
             **pt,
             'computed_dac': computed_dac,
-            'computed_v':   computed_v,
+            'computed_v': computed_v,
             'computed_psi': computed_psi,
-            'error_psi':    error_psi,
-            'error_pct':    error_pct,
+            'error_psi': error_psi,
+            'error_pct': error_pct,
         })
 
     return results
 
-
-# ─────────────────────────────────────────────
-#  Print results table
-# ─────────────────────────────────────────────
 def print_results(results, gain_vv):
     print(f"\n{'='*90}")
     print(f"  RESULTS AT {gain_vv} V/V")
@@ -245,21 +214,17 @@ def print_results(results, gain_vv):
               f"{r['error_psi']:>10.4f} "
               f"{r['error_pct']:>9.4f}%")
 
-    errors    = [r['error_psi'] for r in results]
-    max_err   = max(errors)
-    mean_err  = sum(errors) / len(errors)
-    max_pct   = (max_err  / FULL_SCALE_P) * 100
-    mean_pct  = (mean_err / FULL_SCALE_P) * 100
+    errors = [r['error_psi'] for r in results]
+    max_err = max(errors)
+    mean_err = sum(errors) / len(errors)
+    max_pct = (max_err  / FULL_SCALE_P) * 100
+    mean_pct = (mean_err / FULL_SCALE_P) * 100
 
     print(f"\n  Max Error:  {max_err:.4f} PSI  ({max_pct:.4f}% FS)")
     print(f"  Mean Error: {mean_err:.4f} PSI  ({mean_pct:.4f}% FS)")
 
     return max_err
 
-
-# ─────────────────────────────────────────────
-#  Main
-# ─────────────────────────────────────────────
 def main():
     print("=" * 50)
     print("  PGA305 End-to-End Calibration Test")
@@ -303,7 +268,6 @@ def main():
         max_errors[gain_vv]  = max_err
         all_results[gain_vv] = results
 
-    # ── Verdict ──
     likely_gain = min(max_errors, key=max_errors.get)
     other_gain  = [g for g in GAIN_OPTIONS if g != likely_gain][0]
 

@@ -21,7 +21,8 @@ def parse_value(s):
 
 
 def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain, padc_offset,
-                  names, coeffs, eeprom, tadc, padc, dac, norm_data):
+                  names, coeffs, eeprom, tadc, padc, dac, norm_data,
+                  dac_fit=None, dac_dmm=None):
 
     print('=' * 80)
     print(f'CALIBRATION SUMMARY - {T_points}T{P_points}P Configuration')
@@ -39,6 +40,7 @@ def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain,
     print('Calibration Settings Verification:')
     print(f"  PADC anchor point (room temp, 0 PSI): {int(padc.flatten()[0])}")
     print(f"  PADC range after offset:")
+    
     padc_flat = padc.flatten()
     for i, val in enumerate(padc_flat):
         shifted = val * padc_gain + padc_offset
@@ -46,6 +48,15 @@ def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain,
         status = "WARNING: NEGATIVE" if pn < 0 else "OK"
         print(f"    Point {i}: raw={int(val):>10}  shifted={int(shifted):>12}  pn={pn:>8.4f}  {status}")
     print()
+
+    if dac_fit is not None:
+        print('DAC Output-Stage Correction (from measured DAC_DMM data):')
+        for t, (a, b, c) in enumerate(dac_fit):
+            print(f"  T{t}: measured_V = {a:.6e} * code^2 + {b:.8f} * code + {c:.6f}")
+        
+        print("  (Calibration targets below are corrected for this before fitting h/g/n/m)")
+        print()
+
     print('Coefficients:')
     print(f"{'Name':<6} {'Float Value':>16}   {'EEPROM (Hex)':>12}")
     print('-' * 38)
@@ -100,6 +111,54 @@ def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain,
     print(f"  Max Error:   {max_err:>6} codes  ({max_err * 1e6 / norm_data:>6.1f} ppm FSR)")
     print(f"  Mean Error:  {mean_err:>6.2f} codes  ({mean_err * 1e6 / norm_data:>6.1f} ppm FSR)")
 
+    if dac_dmm is not None:
+        header2 = f"{'Point':<7} {'Code':<10} {'DAC outputs (V)':<16} {'Ideal (V)':<10} {'Error (V)':<10} {'%FSO':<8}"
+        print(header2)
+        print('-' * len(header2))
+        idx = 0
+        fs_voltage = 10.0
+        fso_errors = []
+        
+        for t in range(T_points):
+            a, b, c = dac_fit[t]
+            
+            for pr in range(P_points):
+                tadc_val = tadc_flat[idx]
+                padc_val = padc_flat[idx]
+                
+                if off_en:
+                    ts = (tadc_val + tadc_offset) * tadc_gain
+                    ps = (padc_val + padc_offset) * padc_gain
+                else:
+                    ts = tadc_val * tadc_gain + tadc_offset
+                    ps = padc_val * padc_gain + padc_offset
+                
+                tn, pn = ts / norm_data, ps / norm_data
+                vec = np.array([(tn ** i) * (pn ** j) for j in range(P_points) for i in range(T_points)])
+                code = np.dot(coeffs, vec) * norm_data
+                
+                actual_v = a * code**2 + b * code + c
+                ideal_v = (pr / (P_points - 1)) * fs_voltage
+                
+                err_v = actual_v - ideal_v
+                err_fso = abs(err_v) / fs_voltage * 100
+                fso_errors.append(err_fso)
+                
+                print(f"T{t}P{pr}    {code:>8.1f}  {actual_v:>14.4f}  {ideal_v:>8.4f}  {err_v:>+9.4f}  {err_fso:>6.4f}%")
+                idx += 1
+
+        max_fso = max(fso_errors)
+        
+        if T_points not in (1, 3, 4):
+            print(f"  NOTE: this run used {T_points} temperature point(s) — not one of TI's")
+            print(f"        characterized configurations above, so there is no published")
+            print(f"        accuracy guarantee to directly compare this result against.")
+        else:
+            spec_lookup = {1: 0.13, 3: 0.08, 4: 0.08}
+            spec = spec_lookup[T_points]
+            status = "PASS" if max_fso <= spec else "FAIL"
+            print(f"  Closest TI spec row ({T_points} temp): {spec}% typ  ->  {status} (max {max_fso:.4f}%)")
+
 
 def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_Cal_Output.txt', off_en=0):
     config = configparser.ConfigParser()
@@ -122,22 +181,16 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
 
     tadc = np.array(tadc, dtype=np.float64)
     padc = np.array(padc, dtype=np.float64)
-    dac  = np.array(dac,  dtype=np.float64)
+    dac  = np.array(dac, dtype=np.float64)
 
     padc_min = np.min(padc)
     padc_max = np.max(padc)
     tadc_min = np.min(tadc)
     tadc_max = np.max(tadc)
 
-    # Room temperature 0 PSI anchor point — T0P0 is always room temp, 0 PSI
-    # This ensures pn = 0 at room temp zero pressure, preventing negative pn
-    # clamping the DAC output to zero below the midpoint of the pressure range.
-    # NOTE: if sub-zero temperatures are added, room temperature must still be T0.
     padc_zero_anchor = padc[0][0]
 
     if off_en:
-        # OFF_EN=1: center first, then gain
-        # PADC anchored to room temp 0 PSI instead of midpoint
         padc_offset = -int(padc_zero_anchor)
         tadc_offset = -math.floor((tadc_min + tadc_max) / 2)
 
@@ -150,24 +203,62 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
         T_norm = ((tadc + tadc_offset) * tadc_gain) / norm_data
         P_norm = ((padc + padc_offset) * padc_gain) / norm_data
     else:
-        # OFF_EN=0: gain first, then offset
+
         tadc_abs_max = max(abs(tadc_min), abs(tadc_max))
         padc_abs_max = max(abs(padc_min), abs(padc_max))
 
         padc_gain = int(np.floor((2**(adc_res-1) - 1) / padc_abs_max))
         tadc_gain = int(np.floor((2**(adc_res-1) - 1) / tadc_abs_max))
 
-        # TADC offset: standard midpoint centering (unchanged)
         tadc_offset = -math.floor(tadc_gain * (tadc_min + tadc_max) / 2)
 
-        # PADC offset: anchored to room temp 0 PSI (T0P0) instead of midpoint
-        # This prevents pn going negative below 500 PSI and clamping DAC to zero
         padc_offset = -int(padc_gain * padc_zero_anchor)
 
         T_norm = (tadc * tadc_gain + tadc_offset) / norm_data
         P_norm = (padc * padc_gain + padc_offset) / norm_data
 
-    D_norm = dac / norm_data
+    dac_fit = None
+    dac_dmm = None
+    
+    if 'DAC_DATA' in config:
+        dac_dmm_rows = []
+        for i in range(T_points):
+
+            raw_val = config['DAC_DATA'][f'T{i}'].strip('"')
+            v_row = [float(x.strip()) for x in raw_val.split(',')]
+            dac_dmm_rows.append(v_row)
+        dac_dmm = np.array(dac_dmm_rows, dtype=np.float64)
+
+        fs_voltage = 10.0          
+
+        dac_fit = []
+        dac_corrected = np.zeros_like(dac)
+        
+        for t in range(T_points):
+            codes_row = dac[t]
+            volts_row = dac_dmm[t]
+                        
+            p_coeff = np.polyfit(codes_row, volts_row, 2)
+            dac_fit.append(p_coeff) 
+            
+            for p in range(P_points):
+                ideal_v = (p / (P_points - 1)) * fs_voltage             
+
+                a, b, c = p_coeff
+                c_prime = c - ideal_v
+                discriminant = b**2 - 4*a*c_prime
+                
+                if discriminant >= 0 and a != 0:
+                    corrected_code = (-b + np.sqrt(discriminant)) / (2*a)
+                else:
+                   
+                    corrected_code = (ideal_v - b) / a
+                    
+                dac_corrected[t][p] = corrected_code
+
+        D_norm = dac_corrected / norm_data
+    else:
+        D_norm = dac / norm_data
 
     T_flat = T_norm.flatten()
     P_flat = P_norm.flatten()
@@ -187,12 +278,14 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     eeprom = [int(round(c * norm_coeff)) for c in coeffs]
 
     print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain, padc_offset,
-                  names, coeffs, eeprom, tadc, padc, dac, norm_data)
+                  names, coeffs, eeprom, tadc, padc, dac, norm_data,
+                  dac_fit=dac_fit, dac_dmm=dac_dmm)
 
     with open(output_file, 'w') as f:
         sys.stdout = f
         print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain, padc_offset,
-                      names, coeffs, eeprom, tadc, padc, dac, norm_data)
+                      names, coeffs, eeprom, tadc, padc, dac, norm_data,
+                      dac_fit=dac_fit, dac_dmm=dac_dmm)
         sys.stdout = sys.__stdout__
 
     print(f"Output written to {output_file}")
