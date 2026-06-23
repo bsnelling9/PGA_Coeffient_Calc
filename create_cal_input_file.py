@@ -1,26 +1,34 @@
 import os
 import configparser
+import config
 
 
 class CreateCalInputFile:
 
     def __init__(self, part_number, serial_number,
-                 base_path='../Calibration_Data',
-                 config_path='../Part_Configurations',
-                 adc_resolution=24):
+                 base_path=None,
+                 config_path=None,
+                 adc_resolution=None,
+                 v_min=None,
+                 v_max=None,
+                 pressure_span=None):
 
         self.part_number = part_number
         self.serial_number = serial_number
-        self.base_path = base_path
-        self.config_path = config_path
-        self.adc_resolution = adc_resolution
-        self.dut_path = os.path.join(base_path, part_number, f'{serial_number}.txt')
+        self.base_path = base_path or config.BASE_PATH
+        self.config_path = config_path or config.CONFIG_PATH
+        self.adc_resolution = adc_resolution or config.ADC_RESOLUTION
+        self.v_min = v_min if v_min is not None else config.V_MIN
+        self.v_max = v_max if v_max is not None else config.V_MAX
+        self.pressure_span = pressure_span or config.DEFAULT_PRESSURE_SPAN_PSI
+
+        self.dut_path = os.path.join(self.base_path, part_number, f'{serial_number}.txt')
         self.cal_points = None
 
         self.tadc_data = {}
         self.padc_data = {}
         self.dac_data  = {}
-        self.dmm_data  = {}  
+        self.dmm_data  = {}
         self.t_points  = 0
         self.p_points  = 0
 
@@ -30,30 +38,40 @@ class CreateCalInputFile:
         if not os.path.exists(config_file):
             raise FileNotFoundError(f"Part configuration file not found: {config_file}")
 
-        config = configparser.ConfigParser()
-        config.read(config_file)
+        part_config = configparser.ConfigParser()
+        part_config.read(config_file)
 
-        if 'Default Cal' not in config:
+        if 'Default Cal' not in part_config:
             raise ValueError(f"Default Cal section not found in {config_file}")
 
-        p_cal_points = config['Default Cal']['P Cal Points'].strip('"')
+        p_cal_points = part_config['Default Cal']['P Cal Points'].strip('"')
         self.cal_points = [int(x.strip()) for x in p_cal_points.split(',')]
+
+        if part_config.has_option('Default Cal', 'Pressure Span PSI'):
+            self.pressure_span = float(part_config['Default Cal']['Pressure Span PSI'])
+
+        if part_config.has_option('Default Cal', 'V Min'):
+            self.v_min = float(part_config['Default Cal']['V Min'])
+
+        if part_config.has_option('Default Cal', 'V Max'):
+            self.v_max = float(part_config['Default Cal']['V Max'])
 
         print(f"Read part config: {config_file}")
         print(f"P Cal Points: {self.cal_points}")
+        print(f"Pressure Span (psi): {self.pressure_span}, V Min: {self.v_min}, V Max: {self.v_max}")
 
     def read_dut_file(self):
         if not os.path.exists(self.dut_path):
             raise FileNotFoundError(f"DUT file not found: {self.dut_path}")
 
-        config = configparser.ConfigParser()
-        config.read(self.dut_path)
+        dut_config = configparser.ConfigParser()
+        dut_config.read(self.dut_path)
 
-        if 'ADC_DATA' not in config:
+        if 'ADC_DATA' not in dut_config:
             raise ValueError("ADC_DATA section not found in DUT file")
 
         adc_raw = {}
-        for key, value in config['ADC_DATA'].items():
+        for key, value in dut_config['ADC_DATA'].items():
             key = key.upper()
             parts = value.strip('"').split('\t')
             if len(parts) == 4:
@@ -75,7 +93,7 @@ class CreateCalInputFile:
         for t in range(max_t):
             self.tadc_data[t] = []
             self.padc_data[t] = []
-            
+
             for p in self.cal_points:
                 if (t, p) in adc_raw:
                     self.tadc_data[t].append(adc_raw[(t, p)]['tadc'])
@@ -85,15 +103,14 @@ class CreateCalInputFile:
                     self.tadc_data[t].append(0)
                     self.padc_data[t].append(0)
 
-        if 'DAC_DATA' not in config:
+        if 'DAC_DATA' not in dut_config:
             raise ValueError("DAC_DATA section not found in DUT file")
 
-        for key, value in config['DAC_DATA'].items():
+        for key, value in dut_config['DAC_DATA'].items():
             key = key.upper()
-            
+
             if key.startswith('T') and len(key) >= 2:
                 parts = value.strip('"').split('\t')
-                
 
                 if '.DMM' in key:
                     t_idx = int(key[1])
@@ -104,7 +121,7 @@ class CreateCalInputFile:
                         else:
                             dmm_values.append('0.0')
                     self.dmm_data[t_idx] = dmm_values
-                
+
                 elif '.' not in key and len(key) == 2:
                     t_idx = int(key[1])
                     dac_values = []
@@ -131,6 +148,9 @@ class CreateCalInputFile:
             f.write(f'adc_resolution = {self.adc_resolution}\n')
             f.write(f'T_points = {self.t_points}\n')
             f.write(f'P_points = {self.p_points}\n')
+            f.write(f'v_min = {self.v_min}\n')
+            f.write(f'v_max = {self.v_max}\n')
+            f.write(f'pressure_span_psi = {self.pressure_span}\n')
 
             f.write('\n[TADC]\n')
             for t in range(self.t_points):

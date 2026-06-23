@@ -48,16 +48,19 @@ def load_cal_output(filepath):
 
             if 'Calibration Settings' in line:
                 in_settings = True
-                in_coeffs   = False
+                in_coeffs = False
                 continue
+
             if 'Coefficients' in line and 'Float' not in line:
-                in_coeffs   = True
+                in_coeffs = True
                 in_settings = False
                 continue
+
             if 'Calibration Point' in line:
-                in_coeffs   = False
+                in_coeffs = False
                 in_settings = False
                 continue
+
             if not line or line.startswith('-') or line.startswith('='):
                 continue
 
@@ -71,9 +74,9 @@ def load_cal_output(filepath):
                 if len(parts) >= 3 and parts[0][0] in 'hgnm':
                     coeffs[parts[0]] = signed_24_to_int(parts[2].replace('0x', '').replace('0X', ''))
 
-    tadc_gain   = int(settings['TADC_GAIN'], 16)
+    tadc_gain = int(settings['TADC_GAIN'], 16)
     tadc_offset = signed_24_to_int(settings['TADC_OFFSET'])
-    padc_gain   = int(settings['PADC_GAIN'], 16)
+    padc_gain = int(settings['PADC_GAIN'], 16)
     padc_offset = signed_24_to_int(settings['PADC_OFFSET'])
 
     return tadc_gain, tadc_offset, padc_gain, padc_offset, coeffs
@@ -96,6 +99,7 @@ def load_dut_file(pressure_code, serial_number):
         if not (key.startswith('T') and 'P' in key):
             continue
         parts = value.strip('"').split('\t')
+        
         if len(parts) == 4:
             t_idx = int(key[1])
             p_idx = int(key[3])

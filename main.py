@@ -1,10 +1,11 @@
 import sys
-import configparser
-import numpy as np
 from create_cal_input_file import CreateCalInputFile
 from calculate_coefficients import calculate_coefficients
-from pga_coefficient_calculator import PGACoeffCalculator
 from dut_file_manager import DUTFileManager
+
+# Only needed if re-enabling the TI reference comparison block below.
+# from calculate_coefficients import load_cal_input
+# from pga_coefficient_calculator import PGACoeffCalculator
 
 if len(sys.argv) != 3:
     print("Usage: python main.py <part_number> <serial_number>")
@@ -26,34 +27,33 @@ calculate_coefficients(
     off_en=0
 )
 
-config = configparser.ConfigParser()
-config.read('Cal_Input.txt')
-
-T_points = int(config['General']['T_points'])
-P_points = int(config['General']['P_points'])
-adc_res  = int(config['General']['adc_resolution'])
-
-tadc = [[int(x.strip()) for x in config['TADC'][f'T{i}'][1:-1].split(',')] for i in range(T_points)]
-padc = [[int(x.strip()) for x in config['PADC'][f'T{i}'][1:-1].split(',')] for i in range(T_points)]
-dac  = [[int(x.strip(), 16) for x in config['DAC'][f'T{i}'][1:-1].split(',')] for i in range(T_points)]
-
-cc = PGACoeffCalculator(
-    cal_point=(T_points, P_points),
-    adc_resolution=adc_res,
-    tad_matrix=tadc,
-    pad_matrix=padc,
-    dac_matrix=dac,
-)
-cc.recommend_calibration(offset_enabled=False)
-cc.normalize_data()
-cc.calculate_regression()
-
-with open('TI_Cal_Output.txt', 'w') as f:
-    sys.stdout = f
-    cc.summarize_results()
-    sys.stdout = sys.__stdout__
-
-print("TI_Cal_Output.txt written successfully")
+# --- TI reference comparison (not used) ---
+# Runs the same Cal_Input.txt data through TI's PGACoeffCalculator and
+# writes TI_Cal_Output.txt, so the two implementations can be diffed
+# against each other. Uncomment if you need to re-verify against TI's
+# reference math again.
+#
+# loaded = load_cal_input('Cal_Input.txt')
+#
+# cc = PGACoeffCalculator(
+#     cal_point=(loaded['T_points'], loaded['P_points']),
+#     adc_resolution=loaded['adc_res'],
+#     tad_matrix=loaded['tadc'],
+#     pad_matrix=loaded['padc'],
+#     dac_matrix=loaded['dac'],
+# )
+#
+# cc.recommend_calibration(offset_enabled=False)
+# cc.normalize_data()
+# cc.calculate_regression()
+#
+# with open('TI_Cal_Output.txt', 'w') as f:
+#     sys.stdout = f
+#     cc.summarize_results()
+#     sys.stdout = sys.__stdout__
+#
+# print("TI_Cal_Output.txt written successfully")
+# --- end TI reference comparison ---
 
 dut = DUTFileManager(part_number, serial_number)
 dut.parse_cal_output('Brodie_Cal_Output.txt')

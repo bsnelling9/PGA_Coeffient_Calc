@@ -1,34 +1,23 @@
 import os
+import config
+
 
 class DUTFileManager:
 
-    VALID_COEFFICIENTS = [
-        'h0', 'h1', 'h2', 'h3',
-        'g0', 'g1', 'g2', 'g3',
-        'm0', 'm1', 'm2', 'm3',
-        'n0', 'n1', 'n2', 'n3'
-    ]
-
-    VALID_SETTINGS = [
-        'OFF_EN', 'TADC_GAIN', 'TADC_OFFSET', 'PADC_GAIN', 'PADC_OFFSET'
-    ]
-
-    def __init__(self, part_number, serial_number, base_path='../Calibration_Data'):
-        self.part_number   = part_number
+    def __init__(self, part_number, serial_number, base_path=None):
+        self.part_number = part_number
         self.serial_number = serial_number
-        self.base_path     = base_path
-        self.dut_path      = os.path.join(base_path, part_number, f'{serial_number}.txt')
-        self.coefficients  = {}
-        self.settings      = {}
+        self.base_path = base_path or config.BASE_PATH
+        self.dut_path = os.path.join(self.base_path, part_number, f'{serial_number}.txt')
+        self.coefficients = {}
+        self.settings = {}
 
     def parse_cal_output(self, cal_output_file='Cal_Output.txt'):
-        """
-        Parse Cal_Output.txt and extract coefficients and calibration settings.
-        """
-        self.coefficients = {}
-        self.settings     = {}
 
-        in_coeffs_section   = False
+        self.coefficients = {}
+        self.settings = {}
+
+        in_coeffs_section = False
         in_settings_section = False
 
         with open(cal_output_file, 'r') as f:
@@ -39,16 +28,16 @@ class DUTFileManager:
 
             if 'Calibration Settings' in line:
                 in_settings_section = True
-                in_coeffs_section   = False
+                in_coeffs_section = False
                 continue
 
             if 'Name' in line and 'Float Value' in line:
-                in_coeffs_section   = True
+                in_coeffs_section = True
                 in_settings_section = False
                 continue
 
             if 'Calibration Point Comparison' in line:
-                in_coeffs_section   = False
+                in_coeffs_section = False
                 in_settings_section = False
                 continue
 
@@ -57,7 +46,7 @@ class DUTFileManager:
 
             if in_settings_section:
                 parts = line.split()
-                if len(parts) >= 3 and parts[0] in self.VALID_SETTINGS:
+                if len(parts) >= 3 and parts[0] in config.VALID_SETTINGS:
                     self.settings[parts[0]] = {
                         'value': parts[1],
                         'hex':   parts[2].replace('0x', '')
@@ -65,7 +54,7 @@ class DUTFileManager:
 
             if in_coeffs_section:
                 parts = line.split()
-                if len(parts) >= 3 and parts[0] in self.VALID_COEFFICIENTS:
+                if len(parts) >= 3 and parts[0] in config.VALID_COEFFICIENTS:
                     self.coefficients[parts[0]] = parts[2].replace('0x', '')
 
         print(f"Parsed {len(self.coefficients)} coefficients and {len(self.settings)} settings from {cal_output_file}")
@@ -90,7 +79,7 @@ class DUTFileManager:
                 content = content.rstrip() + '\n'
 
         settings_section = '\n[CalibrationSettings]\n'
-        for name in self.VALID_SETTINGS:
+        for name in config.VALID_SETTINGS:
             if name in self.settings:
                 hex_val = self.settings[name]['hex']
                 settings_section += f'{name} = "{hex_val}"\n'
@@ -98,7 +87,7 @@ class DUTFileManager:
                 settings_section += f'{name} = ""\n'
 
         coeff_section = '\n[Coefficients]\n'
-        for name in self.VALID_COEFFICIENTS:
+        for name in config.VALID_COEFFICIENTS:
             value = self.coefficients.get(name, '')
             coeff_section += f'{name} = "{value}"\n'
 
