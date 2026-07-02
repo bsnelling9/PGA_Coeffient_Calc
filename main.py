@@ -3,22 +3,29 @@ from create_cal_input_file import CreateCalInputFile
 from calculate_coefficients import calculate_coefficients
 from dut_file_manager import DUTFileManager
 
-# Only needed if re-enabling the TI reference comparison block below.
-# from calculate_coefficients import load_cal_input
-# from pga_coefficient_calculator import PGACoeffCalculator
 
-if len(sys.argv) != 3:
-    print("Usage: python main.py <part_number> <serial_number>")
-    print("Example: python main.py 64G 000006")
+def parse_voltage_arg(arg):
+    if arg is None or arg.lower() == 'x':
+        return None
+    return float(arg)
+
+args = sys.argv[1:]
+if len(args) not in (2, 4):
     sys.exit(1)
 
-part_number   = sys.argv[1]
-serial_number = sys.argv[2]
+part_number   = args[0]
+serial_number = args[1]
+
+v_min_override = parse_voltage_arg(args[2]) if len(args) == 4 else None
+v_max_override = parse_voltage_arg(args[3]) if len(args) == 4 else None
 
 cal_input_file = CreateCalInputFile(
     part_number=part_number,
-    serial_number=serial_number
+    serial_number=serial_number,
+    v_min=v_min_override,
+    v_max=v_max_override,
 )
+
 cal_input_file.create_file()
 
 calculate_coefficients(
@@ -27,9 +34,24 @@ calculate_coefficients(
     off_en=0
 )
 
-# --- TI reference comparison (not used) ---
+dut = DUTFileManager(part_number, serial_number)
+dut.parse_cal_output('Brodie_Cal_Output.txt')
+dut.print_settings()
+dut.print_coefficients()
+dut.write_coefficients(
+    v_min=cal_input_file.v_min,
+    v_max=cal_input_file.v_max,
+    pressure_span_psi=cal_input_file.pressure_span,
+)
+
+# Only needed if re-enabling the TI reference comparison block below.
+# from calculate_coefficients import load_cal_input
+# from pga_coefficient_calculator import PGACoeffCalculator
+
+
+# --- TI reference comparison (not used in the normal flow) ---
 # Runs the same Cal_Input.txt data through TI's PGACoeffCalculator and
-# writes TI_Cal_Output.txt, so the two implementations can be diffed
+# writes TI_Cal_Output.txt, so the two implementations can be compared
 # against each other. Uncomment if you need to re-verify against TI's
 # reference math again.
 #
@@ -54,9 +76,3 @@ calculate_coefficients(
 #
 # print("TI_Cal_Output.txt written successfully")
 # --- end TI reference comparison ---
-
-dut = DUTFileManager(part_number, serial_number)
-dut.parse_cal_output('Brodie_Cal_Output.txt')
-dut.print_settings()
-dut.print_coefficients()
-dut.write_coefficients()

@@ -111,6 +111,7 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     norm_data  = 2 ** (adc_res - 2)
     norm_coeff = 2 ** 30
 
+    # this reads the TADC, PADC, and DAC data from the Cal_Input.txt file and converts them to numpy arrays
     tadc, padc, dac = [], [], []
     for i in range(T_points):
         t_row = [parse_value(x) for x in cal_config['TADC'][f'T{i}'][1:-1].split(',')]
@@ -133,6 +134,7 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     tadc_min = np.min(tadc)
     tadc_max = np.max(tadc)
 
+    # Shifts the data to make the 0 psi have 0 PADC, might have to adjust this though
     padc_zero_anchor = padc[0][0]
 
     if off_en:
@@ -206,8 +208,8 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
         dac_target = dac_corrected
         D_norm = dac_corrected / norm_data
     else:
-        # No DAC_DMM data, so there's nothing to correct against —
-        # the raw nominal codes are the fit target as-is.
+        # No DAC_DMM data, so there's nothing to correct against
+        # This should never be the case, leaving it here just incase what I have is wrong
         dac_target = dac
         D_norm = dac / norm_data
 

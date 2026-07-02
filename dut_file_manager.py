@@ -1,5 +1,20 @@
 import os
+from datetime import datetime
 import config
+
+
+def _remove_section(content, section_header):
+    start = content.find(section_header)
+    if start == -1:
+        return content
+
+    next_section_start = content.find('\n[', start + len(section_header))
+    if next_section_start == -1:
+        end = len(content)
+    else:
+        end = next_section_start + 1  # keep the newline that starts the next section
+
+    return content[:start] + content[end:]
 
 
 class DUTFileManager:
@@ -61,7 +76,8 @@ class DUTFileManager:
 
         return self.coefficients, self.settings
 
-    def write_coefficients(self):
+    def write_coefficients(self, v_min, v_max, pressure_span_psi=None, mark_active=True):
+
         if not self.coefficients:
             print("ERROR: No coefficients to write. Call parse_cal_output() first.")
             return
@@ -70,15 +86,18 @@ class DUTFileManager:
             print(f"ERROR: DUT file not found: {self.dut_path}")
             return
 
+        label = f"{v_min}-{v_max}V"
+        settings_header = f'[CalibrationSettings_{label}]'
+        coeff_header = f'[Coefficients_{label}]'
+
         with open(self.dut_path, 'r') as f:
             content = f.read()
 
-        for section in ['[Coefficients]', '[CalibrationSettings]']:
-            if section in content:
-                content = content[:content.index(section)]
-                content = content.rstrip() + '\n'
+        content = _remove_section(content, coeff_header)
+        content = _remove_section(content, settings_header)
+        content = _remove_section(content, '[ActiveConfig]')
 
-        settings_section = '\n[CalibrationSettings]\n'
+        settings_section = f'\n{settings_header}\n'
         for name in config.VALID_SETTINGS:
             if name in self.settings:
                 hex_val = self.settings[name]['hex']
@@ -86,15 +105,28 @@ class DUTFileManager:
             else:
                 settings_section += f'{name} = ""\n'
 
-        coeff_section = '\n[Coefficients]\n'
+        coeff_section = f'\n{coeff_header}\n'
         for name in config.VALID_COEFFICIENTS:
             value = self.coefficients.get(name, '')
             coeff_section += f'{name} = "{value}"\n'
 
-        with open(self.dut_path, 'w') as f:
-            f.write(content + settings_section + coeff_section)
+        active_section = ''
+        if mark_active:
+            timestamp = datetime.now().strftime('%y%m%d_%H%M%S')
+            active_section = '\n[ActiveConfig]\n'
+            active_section += f'Output_Label = "{label}"\n'
+            active_section += f'V_Min = "{v_min}"\n'
+            active_section += f'V_Max = "{v_max}"\n'
+            if pressure_span_psi is not None:
+                active_section += f'Pressure_Span_PSI = "{pressure_span_psi}"\n'
+            active_section += f'Last_Configured = "{timestamp}"\n'
 
-        print(f"Settings and coefficients written to {self.dut_path}")
+        with open(self.dut_path, 'w') as f:
+            f.write(content.rstrip() + '\n' + settings_section + coeff_section + active_section)
+
+        print(f"Wrote variant '{label}' to {self.dut_path}")
+        if mark_active:
+            print(f"[ActiveConfig] now points to '{label}'")
 
     def print_coefficients(self):
         if not self.coefficients:
