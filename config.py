@@ -1,6 +1,6 @@
-
 BASE_PATH = '../Calibration_Data'
 CONFIG_PATH = '../Part_Configurations'
+LOG_PATH = "C:/PGA305_Data/Log"
 
 ADC_RESOLUTION = 24
  

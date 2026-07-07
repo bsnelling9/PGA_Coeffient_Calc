@@ -14,6 +14,7 @@ wheels/
 *.egg-info
 .venv
 
+end_to_end.py
 # Specific scripts/documentation to ignore
 pga_coefficient_calculator.py
 .pga_coefficient_calculator.py

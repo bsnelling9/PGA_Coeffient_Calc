@@ -5,15 +5,9 @@ import config
 
 class CreateCalInputFile:
 
-    def __init__(self, part_number, serial_number,
-                 base_path=None,
-                 config_path=None,
-                 adc_resolution=None,
-                 v_min=None,
-                 v_max=None,
-                 pressure_span=None):
+    def __init__(self, pressure_code, serial_number, base_path=None, config_path=None, adc_resolution=None, v_min=None, v_max=None, pressure_span=None):
 
-        self.part_number = part_number
+        self.pressure_code = pressure_code
         self.serial_number = serial_number
         self.base_path = base_path or config.BASE_PATH
         self.config_path = config_path or config.CONFIG_PATH
@@ -22,7 +16,7 @@ class CreateCalInputFile:
         self.v_max = v_max if v_max is not None else config.V_MAX
         self.pressure_span = pressure_span or config.DEFAULT_PRESSURE_SPAN_PSI
 
-        self.dut_path = os.path.join(self.base_path, part_number, f'{serial_number}.txt')
+        self.dut_path = os.path.join(self.base_path, pressure_code, f'{serial_number}.txt')
         self.cal_points = None
 
         self.tadc_data = {}
@@ -33,7 +27,7 @@ class CreateCalInputFile:
         self.p_points  = 0
 
     def read_part_config(self):
-        config_file = os.path.join(self.config_path, f'{self.part_number}.ini')
+        config_file = os.path.join(self.config_path, f'{self.pressure_code}.ini')
 
         if not os.path.exists(config_file):
             raise FileNotFoundError(f"Part configuration file not found: {config_file}")
