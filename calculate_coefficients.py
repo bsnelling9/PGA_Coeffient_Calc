@@ -93,6 +93,12 @@ def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain,
     print(f"  Mean Error:  {mean_err:>6.2f} codes  ({mean_err * 1e6 / norm_data:>6.1f} ppm FSR)")
 
 
+# Flag to enable/disable DAC correction during coefficient calculation.
+# there was a bug or something but basically on the same unit with this enabled
+# at 1500 psi the output was 10.04V, with it disabled it was 10.004V
+enableDACCorrection = False
+
+
 def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_Cal_Output.txt', off_en=0):
     cal_config = configparser.ConfigParser()
     cal_config.read(cal_input_file)
@@ -103,7 +109,6 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
 
     v_min = float(cal_config['General'].get('v_min', config.V_MIN))
     v_max = float(cal_config['General'].get('v_max', config.V_MAX))
-    pressure_span_psi = float(cal_config['General'].get('pressure_span_psi', config.DEFAULT_PRESSURE_SPAN_PSI))
 
     min_code = -(2 ** (adc_res - 1))
     max_code = (2 ** (adc_res - 1)) - 1
@@ -111,7 +116,6 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     norm_data  = 2 ** (adc_res - 2)
     norm_coeff = 2 ** 30
 
-    # this reads the TADC, PADC, and DAC data from the Cal_Input.txt file and converts them to numpy arrays
     tadc, padc, dac = [], [], []
     for i in range(T_points):
         t_row = [parse_value(x) for x in cal_config['TADC'][f'T{i}'][1:-1].split(',')]
@@ -135,6 +139,7 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     tadc_max = np.max(tadc)
 
     # Shifts the data to make the 0 psi have 0 PADC, might have to adjust this though
+    # as maybe the smallest PADC value needs to be 0, so that could be T1P0 too
     padc_zero_anchor = padc[0][0]
 
     if off_en:
@@ -167,7 +172,7 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     dac_fit = None
     dac_dmm = None
 
-    if 'DAC_DATA' in cal_config:
+    if enableDACCorrection and 'DAC_DATA' in cal_config:
         dac_dmm_rows = []
 
         for i in range(T_points):
@@ -180,7 +185,7 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
         fs_voltage = v_max - v_min
 
         dac_fit = []
-        dac_corrected = np.zeros_like(dac)
+        dac_corrected = np.zeros((T_points, P_points))
 
         for t in range(T_points):
             codes_row = dac[t]
@@ -203,15 +208,35 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
 
                 dac_corrected[t][p] = corrected_code
 
-        # The fit target is the DAC-corrected codes, not the raw nominal
-        # dac codes — this is what print_results compares against.
         dac_target = dac_corrected
         D_norm = dac_corrected / norm_data
     else:
-        # No DAC_DMM data, so there's nothing to correct against
-        # This should never be the case, leaving it here just incase what I have is wrong
-        dac_target = dac
-        D_norm = dac / norm_data
+        n_test_codes = dac.shape[1]
+        if n_test_codes == P_points:
+            cal_col_indices = list(range(P_points))
+        elif n_test_codes == 7 and P_points == 4:
+            cal_col_indices = [0, 1, 3, 5]
+        else:
+            raise ValueError(
+                f"Don't know which of the {n_test_codes} DAC columns correspond "
+                f"to the {P_points} real calibration points - the bracket-point "
+                f"layout isn't the known 7-column/4-point scheme. Update "
+                f"cal_col_indices above, or store this mapping explicitly in "
+                f"Cal_Input.txt so it doesn't have to be hardcoded here."
+            )
+
+        if 'DAC_DATA' in cal_config and 'DAC_Test_Codes' in cal_config['DAC_DATA']:
+            ideal_codes_all = [int(x.strip()) for x in
+                                cal_config['DAC_DATA']['DAC_Test_Codes'].strip('"').split(',')]
+            dac_target_row = np.array(ideal_codes_all)[cal_col_indices]
+        else:
+            # Fallback: DAC_Test_Codes not present in this Cal_Input.txt -
+            # use T0's readback codes at the matched columns as the closest
+            # available approximation to the ideal target.
+            dac_target_row = dac[0][cal_col_indices]
+
+        dac_target = np.tile(dac_target_row, (T_points, 1))
+        D_norm = dac_target / norm_data
 
     T_flat = T_norm.flatten()
     P_flat = P_norm.flatten()

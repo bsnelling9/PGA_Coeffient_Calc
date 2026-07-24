@@ -23,6 +23,7 @@ class CreateCalInputFile:
         self.padc_data = {}
         self.dac_data  = {}
         self.dmm_data  = {}
+        self.dac_test_codes = []  # Added to store master test codes
         self.t_points  = 0
         self.p_points  = 0
 
@@ -101,33 +102,30 @@ class CreateCalInputFile:
             raise ValueError("DAC_DATA section not found in DUT file")
 
         for key, value in dut_config['DAC_DATA'].items():
-            key = key.upper()
+            key_upper = key.upper()
 
-            if key.startswith('T') and len(key) >= 2:
+            # Catch DAC_Test_Codes directly
+            if key_upper == 'DAC_TEST_CODES':
+                parts = value.strip('"').split('\t')
+                self.dac_test_codes = [v.strip() for v in parts if v.strip()]
+                continue
+
+            if key_upper.startswith('T') and len(key_upper) >= 2:
                 parts = value.strip('"').split('\t')
 
-                if '.DMM' in key:
-                    t_idx = int(key[1])
-                    dmm_values = []
-                    for p in self.cal_points:
-                        if p < len(parts):
-                            dmm_values.append(parts[p].strip())
-                        else:
-                            dmm_values.append('0.0')
-                    self.dmm_data[t_idx] = dmm_values
+                if '.DMM' in key_upper:
+                    t_idx = int(key_upper[1])
+                    self.dmm_data[t_idx] = [v.strip() for v in parts]
 
-                elif '.' not in key and len(key) == 2:
-                    t_idx = int(key[1])
+                elif '.' not in key_upper and len(key_upper) == 2:
+                    t_idx = int(key_upper[1])
                     dac_values = []
-                    for p in self.cal_points:
-                        if p < len(parts):
-                            val = parts[p].strip()
-                            try:
-                                dac_values.append(format(int(val), 'X'))
-                            except ValueError:
-                                dac_values.append(val)
-                        else:
-                            dac_values.append('0')
+                    for val in parts:
+                        val = val.strip()
+                        try:
+                            dac_values.append(format(int(val), 'X'))
+                        except ValueError:
+                            dac_values.append(val)
                     self.dac_data[t_idx] = dac_values
 
         print(f"Read DUT file: {self.dut_path}")
@@ -161,8 +159,13 @@ class CreateCalInputFile:
                 values = ','.join(self.dac_data[t])
                 f.write(f'T{t} = "{values}"\n')
 
-            if self.dmm_data:
+            if self.dmm_data or self.dac_test_codes:
                 f.write('\n[DAC_DATA]\n')
+
+                if self.dac_test_codes:
+                    values = ','.join(self.dac_test_codes)
+                    f.write(f'DAC_Test_Codes = "{values}"\n')
+
                 for t in sorted(self.dmm_data.keys()):
                     values = ','.join(self.dmm_data[t])
                     f.write(f'T{t} = "{values}"\n')
