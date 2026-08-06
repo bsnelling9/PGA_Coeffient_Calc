@@ -13,7 +13,8 @@ def parse_voltage_arg(arg):
     return float(arg)
 
 
-def run_single(pressure_code, serial_number, v_min_override=None, v_max_override=None):
+def run_single(pressure_code, serial_number, v_min_override=None, v_max_override=None,
+               dac_fs_voltage=None, p_min_override=None, p_max_override=None):
     
     sn_str = f"{serial_number:06d}" if isinstance(serial_number, int) else serial_number
 
@@ -26,19 +27,31 @@ def run_single(pressure_code, serial_number, v_min_override=None, v_max_override
         v_min=v_min_override,
         v_max=v_max_override,
     )
+    
     cal_input_file.create_file(output_file=cal_input_filename)
 
     calculate_coefficients(
         cal_input_file=cal_input_filename,
         output_file=output_filename,
-        off_en=0
+        off_en=0,
+        dac_fs_voltage=dac_fs_voltage,
+        p_min=p_min_override,
+        p_max=p_max_override,
     )
 
     dut = DUTFileManager(pressure_code, sn_str)
     dut.parse_cal_output(output_filename)
     dut.print_settings()
     dut.print_coefficients()
-    dut.write_coefficients()
+
+    label_parts = []
+    if v_min_override is not None and v_max_override is not None:
+        label_parts.append(f"{v_min_override:g}-{v_max_override:g}V")
+    if p_min_override is not None and p_max_override is not None:
+        label_parts.append(f"{p_min_override:g}-{p_max_override:g}psi")
+    label = "_".join(label_parts) if label_parts else None
+
+    dut.write_coefficients(label=label)
 
     os.remove(cal_input_filename)
     os.remove(output_filename)
@@ -55,9 +68,6 @@ def run_batch(timestamp_str):
         return
 
     print(f"Found {len(sensors)} connected sensor(s):")
-    
-    #for channel, s in sorted(sensors.items()):
-        #print(f"  Channel {channel:>3}  |  SN: {s['serial_number']:>6}  |  Pressure Code: {s['pressure_code']}")
 
     all_ok = True
     for channel in sorted(sensors.keys()):
@@ -81,16 +91,20 @@ def main():
     try:
         if len(args) == 2 and args[0].lower() == "log":
             success = run_batch(timestamp_str=args[1])
-        elif len(args) in (2, 4):
+        elif len(args) in (2, 4, 5, 7):
             pressure_code = args[0]
             serial_number = args[1]
-            v_min_override = parse_voltage_arg(args[2]) if len(args) == 4 else None
-            v_max_override = parse_voltage_arg(args[3]) if len(args) == 4 else None
-            run_single(pressure_code, serial_number, v_min_override, v_max_override)
+            v_min_override = parse_voltage_arg(args[2]) if len(args) >= 4 else None
+            v_max_override = parse_voltage_arg(args[3]) if len(args) >= 4 else None
+            dac_fs_voltage = parse_voltage_arg(args[4]) if len(args) >= 5 else None
+            p_min_override = parse_voltage_arg(args[5]) if len(args) == 7 else None
+            p_max_override = parse_voltage_arg(args[6]) if len(args) == 7 else None
+            run_single(pressure_code, serial_number, v_min_override, v_max_override,
+                       dac_fs_voltage, p_min_override, p_max_override)
             success = True
         else:
             print("Usage:")
-            print("  python main.py <part_number> <serial_number> [v_min v_max]")
+            print("  python main.py <part_number> <serial_number> [v_min v_max [dac_fs_voltage [p_min p_max]]]")
             print("  python main.py Log <timestamp>")
             sys.exit(2)
 
@@ -102,36 +116,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# Only needed if re-enabling the TI reference comparison block below.
-# from calculate_coefficients import load_cal_input
-# from pga_coefficient_calculator import PGACoeffCalculator
-
-
-# --- TI reference comparison (not used in the normal flow) ---
-# Runs the same Cal_Input.txt data through TI's PGACoeffCalculator and
-# writes TI_Cal_Output.txt, so the two implementations can be compared
-# against each other. Uncomment if you need to re-verify against TI's
-# reference math again.
-#
-# loaded = load_cal_input('Cal_Input.txt')
-#
-# cc = PGACoeffCalculator(
-#     cal_point=(loaded['T_points'], loaded['P_points']),
-#     adc_resolution=loaded['adc_res'],
-#     tad_matrix=loaded['tadc'],
-#     pad_matrix=loaded['padc'],
-#     dac_matrix=loaded['dac'],
-# )
-#
-# cc.recommend_calibration(offset_enabled=False)
-# cc.normalize_data()
-# cc.calculate_regression()
-#
-# with open('TI_Cal_Output.txt', 'w') as f:
-#     sys.stdout = f
-#     cc.summarize_results()
-#     sys.stdout = sys.__stdout__
-#
-# print("TI_Cal_Output.txt written successfully")
-# --- end TI reference comparison ---

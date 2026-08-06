@@ -23,7 +23,8 @@ class CreateCalInputFile:
         self.padc_data = {}
         self.dac_data  = {}
         self.dmm_data  = {}
-        self.dac_test_codes = []  # Added to store master test codes
+        self.dac_test_codes = [] 
+        self.pressure_values = []   # actual measured psi per P index (from T0 row)
         self.t_points  = 0
         self.p_points  = 0
 
@@ -74,7 +75,8 @@ class CreateCalInputFile:
                 p_idx = int(key[3])
                 adc_raw[(t_idx, p_idx)] = {
                     'tadc': int(parts[1]),
-                    'padc': int(parts[3])
+                    'padc': int(parts[3]),
+                    'pressure_value': float(parts[2]),
                 }
 
         max_t = max(k[0] for k in adc_raw.keys()) + 1
@@ -97,6 +99,14 @@ class CreateCalInputFile:
                     print(f"WARNING: Missing data point T{t}P{p} — using 0")
                     self.tadc_data[t].append(0)
                     self.padc_data[t].append(0)
+
+        # Actual measured pressure per P index, taken from T0 (reference temperature).
+        for p in self.cal_points:
+            if (0, p) in adc_raw:
+                self.pressure_values.append(adc_raw[(0, p)]['pressure_value'])
+            else:
+                print(f"WARNING: Missing pressure value for P{p} at T0 — using 0")
+                self.pressure_values.append(0.0)
 
         if 'DAC_DATA' not in dut_config:
             raise ValueError("DAC_DATA section not found in DUT file")
@@ -130,6 +140,7 @@ class CreateCalInputFile:
 
         print(f"Read DUT file: {self.dut_path}")
         print(f"Found {self.t_points}T x {self.p_points}P calibration points")
+        print(f"Pressure values (T0): {self.pressure_values}")
 
     def write_cal_input(self, output_file='Cal_Input.txt'):
         if not self.tadc_data:
@@ -153,6 +164,10 @@ class CreateCalInputFile:
             for t in range(self.t_points):
                 values = ','.join(str(v) for v in self.padc_data[t])
                 f.write(f'T{t} = "{values}"\n')
+
+            f.write('\n[Pressure]\n')
+            values = ','.join(str(v) for v in self.pressure_values)
+            f.write(f'Values = "{values}"\n')
 
             f.write('\n[DAC]\n')
             for t in sorted(self.dac_data.keys()):

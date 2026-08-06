@@ -99,7 +99,7 @@ def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain,
 enableDACCorrection = False
 
 
-def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_Cal_Output.txt', off_en=0):
+def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_Cal_Output.txt', off_en=0, dac_fs_voltage=None, p_min=None, p_max=None):
     cal_config = configparser.ConfigParser()
     cal_config.read(cal_input_file)
 
@@ -109,6 +109,23 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
 
     v_min = float(cal_config['General'].get('v_min', config.V_MIN))
     v_max = float(cal_config['General'].get('v_max', config.V_MAX))
+
+    # Physical full-scale voltage the DAC_Test_Codes bracket actually sweeps
+    # to at the CURRENT gain setting. Defaults to config.V_MAX (10V) for
+    # units still at original gain - only pass dac_fs_voltage when gain has
+    # been changed from default.
+    fs_voltage_bracket = dac_fs_voltage if dac_fs_voltage is not None else config.V_MAX
+
+    pressure_values = [float(x.strip()) for x in cal_config['Pressure']['Values'].strip('"').split(',')]
+
+    # p_min/p_max define the new full-scale PRESSURE span. Default to the
+    # actual measured calibration span so an un-overridden run reproduces
+    # the original index-based behavior exactly.
+    p_min_actual = p_min if p_min is not None else min(pressure_values)
+    p_max_actual = p_max if p_max is not None else max(pressure_values)
+
+    if p_max_actual <= p_min_actual:
+        raise ValueError(f"p_max ({p_max_actual}) must be greater than p_min ({p_min_actual})")
 
     min_code = -(2 ** (adc_res - 1))
     max_code = (2 ** (adc_res - 1)) - 1
@@ -212,27 +229,37 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
         D_norm = dac_corrected / norm_data
     else:
         n_test_codes = dac.shape[1]
+
         if n_test_codes == P_points:
             cal_col_indices = list(range(P_points))
-        elif n_test_codes == 7 and P_points == 4:
-            cal_col_indices = [0, 1, 3, 5]
         else:
-            raise ValueError(
-                f"Don't know which of the {n_test_codes} DAC columns correspond "
-                f"to the {P_points} real calibration points - the bracket-point "
-                f"layout isn't the known 7-column/4-point scheme. Update "
-                f"cal_col_indices above, or store this mapping explicitly in "
-                f"Cal_Input.txt so it doesn't have to be hardcoded here."
-            )
+            BRACKET_FRACTIONS = [0, 1/3, 1/2, 2/3, 3/4, 1, 1.1]
+
+            if n_test_codes != len(BRACKET_FRACTIONS):
+                raise ValueError(
+                    f"Don't know the bracket-voltage layout for {n_test_codes} DAC "
+                    f"columns - update BRACKET_FRACTIONS above, or store the "
+                    f"mapping explicitly in Cal_Input.txt."
+                )
+
+            bracket_voltages = np.array(BRACKET_FRACTIONS) * fs_voltage_bracket
+
+            # Target voltage per calibration point, based on that point's
+            # ACTUAL measured pressure value scaled against the new p_min/p_max
+            # span - not evenly spaced by index. This is what allows a pressure
+            # span retarget (e.g. 0-1500psi -> 0-1200psi) to work correctly.
+            target_voltages = [
+                v_min + ((pv - p_min_actual) / (p_max_actual - p_min_actual)) * (v_max - v_min)
+                for pv in pressure_values
+            ]
+
+            cal_col_indices = [int(np.argmin(np.abs(bracket_voltages - tv))) for tv in target_voltages]
 
         if 'DAC_DATA' in cal_config and 'DAC_Test_Codes' in cal_config['DAC_DATA']:
             ideal_codes_all = [int(x.strip()) for x in
                                 cal_config['DAC_DATA']['DAC_Test_Codes'].strip('"').split(',')]
             dac_target_row = np.array(ideal_codes_all)[cal_col_indices]
         else:
-            # Fallback: DAC_Test_Codes not present in this Cal_Input.txt -
-            # use T0's readback codes at the matched columns as the closest
-            # available approximation to the ideal target.
             dac_target_row = dac[0][cal_col_indices]
 
         dac_target = np.tile(dac_target_row, (T_points, 1))

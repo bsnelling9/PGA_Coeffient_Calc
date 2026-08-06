@@ -61,7 +61,7 @@ class DUTFileManager:
 
         return self.coefficients, self.settings
 
-    def write_coefficients(self):
+    def write_coefficients(self, label=None):
         if not self.coefficients:
             print("ERROR: No coefficients to write. Call parse_cal_output() first.")
             return
@@ -73,12 +73,21 @@ class DUTFileManager:
         with open(self.dut_path, 'r') as f:
             content = f.read()
 
-        for section in ['[Coefficients]', '[CalibrationSettings]']:
-            if section in content:
-                content = content[:content.index(section)]
-                content = content.rstrip() + '\n'
+        # Suffix form (label after section name) to match
+        # CalibrationWriter.parse_dut_file's CALIBRATIONSETTINGS_{label} / COEFFICIENTS_{label} lookup.
+        settings_header = f'[CalibrationSettings_{label}]' if label else '[CalibrationSettings]'
+        coeff_header = f'[Coefficients_{label}]' if label else '[Coefficients]'
 
-        settings_section = '\n[CalibrationSettings]\n'
+        for header in [settings_header, coeff_header]:
+            if header in content:
+                start = content.index(header)
+                next_section = content.find('\n[', start + 1)
+                if next_section == -1:
+                    content = content[:start].rstrip() + '\n'
+                else:
+                    content = content[:start] + content[next_section + 1:]
+
+        settings_section = f'\n{settings_header}\n'
         for name in config.VALID_SETTINGS:
             if name in self.settings:
                 hex_val = self.settings[name]['hex']
@@ -86,15 +95,15 @@ class DUTFileManager:
             else:
                 settings_section += f'{name} = ""\n'
 
-        coeff_section = '\n[Coefficients]\n'
+        coeff_section = f'\n{coeff_header}\n'
         for name in config.VALID_COEFFICIENTS:
             value = self.coefficients.get(name, '')
             coeff_section += f'{name} = "{value}"\n'
 
         with open(self.dut_path, 'w') as f:
-            f.write(content + settings_section + coeff_section)
+            f.write(content.rstrip() + '\n' + settings_section + coeff_section)
 
-        print(f"Settings and coefficients written to {self.dut_path}")
+        print(f"Settings and coefficients written to {self.dut_path} under {settings_header}/{coeff_header}")
 
     def print_coefficients(self):
         if not self.coefficients:
