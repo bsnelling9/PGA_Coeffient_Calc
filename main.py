@@ -99,6 +99,7 @@ def main():
             dac_fs_voltage = parse_voltage_arg(args[4]) if len(args) >= 5 else None
             p_min_override = parse_voltage_arg(args[5]) if len(args) == 7 else None
             p_max_override = parse_voltage_arg(args[6]) if len(args) == 7 else None
+
             run_single(pressure_code, serial_number, v_min_override, v_max_override,
                        dac_fs_voltage, p_min_override, p_max_override)
             success = True

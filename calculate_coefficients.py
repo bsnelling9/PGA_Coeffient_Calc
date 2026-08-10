@@ -149,6 +149,34 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     tadc = np.array(tadc, dtype=np.float64)
     padc = np.array(padc, dtype=np.float64)
     dac  = np.array(dac, dtype=np.float64)
+    pressure_values = np.array(pressure_values, dtype=np.float64)
+
+    # If any calibration point's real pressure falls outside the new
+    # [p_min_actual, p_max_actual] span, it can't be assigned a real voltage
+    # target (would be <0V or >v_max). Instead of dropping it or clamping its
+    # DAC target (which silently corrupts the fit - see conversation), replace
+    # its PADC/TADC with values INTERPOLATED at the new boundary pressure,
+    # using the original in-range calibration points as reference. The point
+    # then represents "PADC/TADC at exactly p_min/p_max" and gets a correct,
+    # un-clamped voltage target (v_min or v_max exactly).
+    sort_idx = np.argsort(pressure_values)
+    pressure_sorted = pressure_values[sort_idx]
+
+    for p_idx in range(P_points):
+        pv = pressure_values[p_idx]
+        boundary = None
+        if pv > p_max_actual:
+            boundary = p_max_actual
+        elif pv < p_min_actual:
+            boundary = p_min_actual
+
+        if boundary is not None:
+            for t_idx in range(T_points):
+                padc[t_idx, p_idx] = np.interp(boundary, pressure_sorted, padc[t_idx][sort_idx])
+                tadc[t_idx, p_idx] = np.interp(boundary, pressure_sorted, tadc[t_idx][sort_idx])
+            print(f"P{p_idx}: pressure {pv} outside new span [{p_min_actual}, {p_max_actual}] - "
+                  f"replaced with PADC/TADC interpolated at {boundary} psi")
+            pressure_values[p_idx] = boundary
 
     padc_min = np.min(padc)
     padc_max = np.max(padc)
@@ -232,6 +260,12 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
 
         if n_test_codes == P_points:
             cal_col_indices = list(range(P_points))
+            if 'DAC_DATA' in cal_config and 'DAC_Test_Codes' in cal_config['DAC_DATA']:
+                ideal_codes_all = [int(x.strip()) for x in
+                                    cal_config['DAC_DATA']['DAC_Test_Codes'].strip('"').split(',')]
+                dac_target_row = np.array(ideal_codes_all)[cal_col_indices]
+            else:
+                dac_target_row = dac[0][cal_col_indices]
         else:
             BRACKET_FRACTIONS = [0, 1/3, 1/2, 2/3, 3/4, 1, 1.1]
 
@@ -242,25 +276,27 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
                     f"mapping explicitly in Cal_Input.txt."
                 )
 
+            if 'DAC_DATA' not in cal_config or 'DAC_Test_Codes' not in cal_config['DAC_DATA']:
+                raise ValueError("DAC_Test_Codes required for bracket-based targeting.")
+
+            ideal_codes_all = np.array([int(x.strip()) for x in
+                                cal_config['DAC_DATA']['DAC_Test_Codes'].strip('"').split(',')], dtype=np.float64)
+
             bracket_voltages = np.array(BRACKET_FRACTIONS) * fs_voltage_bracket
 
             # Target voltage per calibration point, based on that point's
-            # ACTUAL measured pressure value scaled against the new p_min/p_max
-            # span - not evenly spaced by index. This is what allows a pressure
-            # span retarget (e.g. 0-1500psi -> 0-1200psi) to work correctly.
+            # (possibly boundary-replaced) pressure value scaled against the
+            # new p_min/p_max span. Points that were out-of-range now sit
+            # exactly at p_min_actual or p_max_actual, giving an exact
+            # v_min/v_max target - no clamping needed.
             target_voltages = [
                 v_min + ((pv - p_min_actual) / (p_max_actual - p_min_actual)) * (v_max - v_min)
                 for pv in pressure_values
             ]
 
-            cal_col_indices = [int(np.argmin(np.abs(bracket_voltages - tv))) for tv in target_voltages]
-
-        if 'DAC_DATA' in cal_config and 'DAC_Test_Codes' in cal_config['DAC_DATA']:
-            ideal_codes_all = [int(x.strip()) for x in
-                                cal_config['DAC_DATA']['DAC_Test_Codes'].strip('"').split(',')]
-            dac_target_row = np.array(ideal_codes_all)[cal_col_indices]
-        else:
-            dac_target_row = dac[0][cal_col_indices]
+            # Interpolate linearly between the two nearest real bracket points
+            # instead of snapping to the single nearest one.
+            dac_target_row = np.interp(target_voltages, bracket_voltages, ideal_codes_all)
 
         dac_target = np.tile(dac_target_row, (T_points, 1))
         D_norm = dac_target / norm_data
