@@ -6,9 +6,11 @@ import config
 
 
 def signed_int_to_hex24(value):
+    if not -(1 << 23) <= value <= (1 << 23) - 1:
+        raise ValueError(f"{value} does not fit in signed 24-bit")
     if value < 0:
         value = (1 << 24) + value
-    return hex(value)[2:].upper().zfill(6)
+    return f"{value:06X}"
 
 
 def parse_value(s):
@@ -21,13 +23,46 @@ def parse_value(s):
         return int(s, 16)
 
 
+def gain_for_span(v_min, v_max):
+    gain = config.SPAN_TO_GAIN.get((v_min, v_max))
+    if gain is None:
+        raise ValueError(f"No known gain for voltage span ({v_min}, {v_max}) — add it to SPAN_TO_GAIN.")
+    return gain
+
+
+def interp_with_extrapolation(x, xp, fp):
+    x = np.atleast_1d(np.asarray(x, dtype=np.float64))
+    xp = np.asarray(xp, dtype=np.float64)
+    fp = np.asarray(fp, dtype=np.float64)
+
+    result = np.interp(x, xp, fp)
+
+    below = x < xp[0]
+    if np.any(below):
+        slope = (fp[1] - fp[0]) / (xp[1] - xp[0])
+        result[below] = fp[0] + slope * (x[below] - xp[0])
+
+    above = x > xp[-1]
+    if np.any(above):
+        slope = (fp[-1] - fp[-2]) / (xp[-1] - xp[-2])
+        result[above] = fp[-1] + slope * (x[above] - xp[-1])
+
+    return result
+
+
 def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain, padc_offset,
-                  names, coeffs, eeprom, tadc, padc, dac_target, norm_data):
+                  names, coeffs, eeprom, tadc, padc, dac_target, norm_data,
+                  current_gain=None, target_gain=None):
 
     print('=' * 80)
     print(f'CALIBRATION SUMMARY - {T_points}T{P_points}P Configuration')
     print('=' * 80)
     print()
+    if current_gain is not None and target_gain is not None:
+        print(f"DAC gain: current={current_gain} -> target={target_gain}"
+              f"{'  (using target-gain sweep table)' if current_gain != target_gain else '  (unchanged)'}")
+        print()
+
     print('Calibration Settings:')
     print(f"{'Setting':<20} {'Value':<14} {'EEPROM (Hex)':>12}")
     print('-' * 48)
@@ -82,7 +117,7 @@ def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain,
             error = abs(expected - computed)
             errors.append(error)
 
-            print(f"T{t}P{pr}    0x{signed_int_to_hex24(int(tadc_val))}   0x{signed_int_to_hex24(int(padc_val) & 0xFFFFFF)}   0x{signed_int_to_hex24(expected)}   0x{signed_int_to_hex24(computed)}   {error:<6}")
+            print(f"T{t}P{pr}    0x{signed_int_to_hex24(int(tadc_val))}   0x{signed_int_to_hex24(int(padc_val))}   0x{signed_int_to_hex24(expected)}   0x{signed_int_to_hex24(computed)}   {error:<6}")
             idx += 1
 
     print()
@@ -92,14 +127,9 @@ def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain,
     print(f"  Max Error:   {max_err:>6} codes  ({max_err * 1e6 / norm_data:>6.1f} ppm FSR)")
     print(f"  Mean Error:  {mean_err:>6.2f} codes  ({mean_err * 1e6 / norm_data:>6.1f} ppm FSR)")
 
-
-# Flag to enable/disable DAC correction during coefficient calculation.
-# there was a bug or something but basically on the same unit with this enabled
-# at 1500 psi the output was 10.04V, with it disabled it was 10.004V
-enableDACCorrection = False
-
-
-def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_Cal_Output.txt', off_en=0, dac_fs_voltage=None, p_min=None, p_max=None):
+def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_Cal_Output.txt', off_en=0,
+                            dac_fs_voltage=None, p_min=None, p_max=None,
+                            current_v_min=None, current_v_max=None):
     cal_config = configparser.ConfigParser()
     cal_config.read(cal_input_file)
 
@@ -110,17 +140,16 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     v_min = float(cal_config['General'].get('v_min', config.V_MIN))
     v_max = float(cal_config['General'].get('v_max', config.V_MAX))
 
-    # Physical full-scale voltage the DAC_Test_Codes bracket actually sweeps
-    # to at the CURRENT gain setting. Defaults to config.V_MAX (10V) for
-    # units still at original gain - only pass dac_fs_voltage when gain has
-    # been changed from default.
+    resolved_current_v_min = current_v_min if current_v_min is not None else config.V_MIN
+    resolved_current_v_max = current_v_max if current_v_max is not None else config.V_MAX
+
+    target_gain = gain_for_span(v_min, v_max)
+    current_gain = gain_for_span(resolved_current_v_min, resolved_current_v_max)
+
     fs_voltage_bracket = dac_fs_voltage if dac_fs_voltage is not None else config.V_MAX
 
     pressure_values = [float(x.strip()) for x in cal_config['Pressure']['Values'].strip('"').split(',')]
 
-    # p_min/p_max define the new full-scale PRESSURE span. Default to the
-    # actual measured calibration span so an un-overridden run reproduces
-    # the original index-based behavior exactly.
     p_min_actual = p_min if p_min is not None else min(pressure_values)
     p_max_actual = p_max if p_max is not None else max(pressure_values)
 
@@ -151,14 +180,6 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     dac  = np.array(dac, dtype=np.float64)
     pressure_values = np.array(pressure_values, dtype=np.float64)
 
-    # If any calibration point's real pressure falls outside the new
-    # [p_min_actual, p_max_actual] span, it can't be assigned a real voltage
-    # target (would be <0V or >v_max). Instead of dropping it or clamping its
-    # DAC target (which silently corrupts the fit - see conversation), replace
-    # its PADC/TADC with values INTERPOLATED at the new boundary pressure,
-    # using the original in-range calibration points as reference. The point
-    # then represents "PADC/TADC at exactly p_min/p_max" and gets a correct,
-    # un-clamped voltage target (v_min or v_max exactly).
     sort_idx = np.argsort(pressure_values)
     pressure_sorted = pressure_values[sort_idx]
 
@@ -171,6 +192,7 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
             boundary = p_min_actual
 
         if boundary is not None:
+
             for t_idx in range(T_points):
                 padc[t_idx, p_idx] = np.interp(boundary, pressure_sorted, padc[t_idx][sort_idx])
                 tadc[t_idx, p_idx] = np.interp(boundary, pressure_sorted, tadc[t_idx][sort_idx])
@@ -183,19 +205,21 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     tadc_min = np.min(tadc)
     tadc_max = np.max(tadc)
 
-    # Shifts the data to make the 0 psi have 0 PADC, might have to adjust this though
-    # as maybe the smallest PADC value needs to be 0, so that could be T1P0 too
-    padc_zero_anchor = padc[0][0]
+    # this was the old way when I though centering it would not work
+    # padc_zero_anchor = np.min(padc[:, 0])
+    padc_center = (padc_min + padc_max) / 2
+    tadc_center = (tadc_min + tadc_max) / 2
 
     if off_en:
-        padc_offset = -int(padc_zero_anchor)
-        tadc_offset = -math.floor((tadc_min + tadc_max) / 2)
+        padc_offset = -int(padc_center)
+        tadc_offset = -math.floor(tadc_center)       
 
         padc_abs_max = max(abs(padc_min + padc_offset), abs(padc_max + padc_offset))
         tadc_abs_max = max(abs(tadc_min + tadc_offset), abs(tadc_max + tadc_offset))
 
         padc_gain = int(np.floor((2**(adc_res-1) - 1) / padc_abs_max))
         tadc_gain = int(np.floor((2**(adc_res-1) - 1) / tadc_abs_max))
+        tadc_gain = min(tadc_gain, config.TADC_GAIN_MAX) #caps the tadc gain to avoid saturation
 
         T_norm = ((tadc + tadc_offset) * tadc_gain) / norm_data
         P_norm = ((padc + padc_offset) * padc_gain) / norm_data
@@ -207,9 +231,9 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
         padc_gain = int(np.floor((2**(adc_res-1) - 1) / padc_abs_max))
         tadc_gain = int(np.floor((2**(adc_res-1) - 1) / tadc_abs_max))
 
-        tadc_offset = -math.floor(tadc_gain * (tadc_min + tadc_max) / 2)
+        tadc_offset = -math.floor(tadc_gain * tadc_center)
 
-        padc_offset = -int(padc_gain * padc_zero_anchor)
+        padc_offset = -int(padc_gain * padc_center)
 
         T_norm = (tadc * tadc_gain + tadc_offset) / norm_data
         P_norm = (padc * padc_gain + padc_offset) / norm_data
@@ -217,7 +241,7 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
     dac_fit = None
     dac_dmm = None
 
-    if enableDACCorrection and 'DAC_DATA' in cal_config:
+    if config.ENABLE_DAC_CORRECTION and 'DAC_DATA' in cal_config:
         dac_dmm_rows = []
 
         for i in range(T_points):
@@ -267,36 +291,42 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
             else:
                 dac_target_row = dac[0][cal_col_indices]
         else:
-            BRACKET_FRACTIONS = [0, 1/3, 1/2, 2/3, 3/4, 1, 1.1]
-
-            if n_test_codes != len(BRACKET_FRACTIONS):
-                raise ValueError(
-                    f"Don't know the bracket-voltage layout for {n_test_codes} DAC "
-                    f"columns - update BRACKET_FRACTIONS above, or store the "
-                    f"mapping explicitly in Cal_Input.txt."
-                )
-
-            if 'DAC_DATA' not in cal_config or 'DAC_Test_Codes' not in cal_config['DAC_DATA']:
-                raise ValueError("DAC_Test_Codes required for bracket-based targeting.")
-
-            ideal_codes_all = np.array([int(x.strip()) for x in
-                                cal_config['DAC_DATA']['DAC_Test_Codes'].strip('"').split(',')], dtype=np.float64)
-
-            bracket_voltages = np.array(BRACKET_FRACTIONS) * fs_voltage_bracket
-
-            # Target voltage per calibration point, based on that point's
-            # (possibly boundary-replaced) pressure value scaled against the
-            # new p_min/p_max span. Points that were out-of-range now sit
-            # exactly at p_min_actual or p_max_actual, giving an exact
-            # v_min/v_max target - no clamping needed.
             target_voltages = [
                 v_min + ((pv - p_min_actual) / (p_max_actual - p_min_actual)) * (v_max - v_min)
                 for pv in pressure_values
             ]
 
-            # Interpolate linearly between the two nearest real bracket points
-            # instead of snapping to the single nearest one.
-            dac_target_row = np.interp(target_voltages, bracket_voltages, ideal_codes_all)
+            if target_gain != current_gain:
+                # Gain is changing, so the codes this unit was tested against
+                # (at current_gain) no longer describe its behavior at
+                # target_gain. Use the characterized sweep for the target
+                # gain instead of the production-test bracket data.
+                sweep = config.DAC_CODE_VOLTAGE_SWEEPS.get(target_gain)
+
+                if sweep is None:
+                    raise ValueError(f"No fixed voltage sweep for gain {target_gain}")
+                codes_sorted = sorted(sweep.keys())
+                xp = np.array([sweep[c] for c in codes_sorted], dtype=np.float64)  # voltages
+                fp = np.array(codes_sorted, dtype=np.float64)                      # codes
+            else:
+               
+                if n_test_codes != len(config.DAC_TEST_CODE_FRACTIONS):
+                    raise ValueError(
+                        f"Don't know the bracket-voltage layout for {n_test_codes} DAC "
+                        f"columns - update DAC_TEST_CODE_FRACTIONS above, or store the "
+                        f"mapping explicitly in Cal_Input.txt."
+                    )
+
+                if 'DAC_DATA' not in cal_config or 'DAC_Test_Codes' not in cal_config['DAC_DATA']:
+                    raise ValueError("DAC_Test_Codes required for bracket-based targeting.")
+
+                ideal_codes_all = np.array([int(x.strip()) for x in
+                                    cal_config['DAC_DATA']['DAC_Test_Codes'].strip('"').split(',')], dtype=np.float64)
+
+                bracket_voltages = np.array(config.DAC_TEST_CODE_FRACTIONS) * fs_voltage_bracket
+                xp, fp = bracket_voltages, ideal_codes_all
+
+            dac_target_row = interp_with_extrapolation(target_voltages, xp, fp)
 
         dac_target = np.tile(dac_target_row, (T_points, 1))
         D_norm = dac_target / norm_data
@@ -322,12 +352,14 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
         eeprom.append(int(round(fixed_point_value)))
 
     print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain, padc_offset,
-                  coeff_label, coeffs, eeprom, tadc, padc, dac_target, norm_data)
+                  coeff_label, coeffs, eeprom, tadc, padc, dac_target, norm_data,
+                  current_gain=current_gain, target_gain=target_gain)
 
     with open(output_file, 'w') as f:
         sys.stdout = f
         print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain, padc_offset,
-                      coeff_label, coeffs, eeprom, tadc, padc, dac_target, norm_data)
+                      coeff_label, coeffs, eeprom, tadc, padc, dac_target, norm_data,
+                      current_gain=current_gain, target_gain=target_gain)
         sys.stdout = sys.__stdout__
 
     print(f"Output written to {output_file}")

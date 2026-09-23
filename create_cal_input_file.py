@@ -24,7 +24,7 @@ class CreateCalInputFile:
         self.dac_data  = {}
         self.dmm_data  = {}
         self.dac_test_codes = [] 
-        self.pressure_values = []   # actual measured psi per P index (from T0 row)
+        self.pressure_values = []   
         self.t_points  = 0
         self.p_points  = 0
 
@@ -100,13 +100,10 @@ class CreateCalInputFile:
                     self.tadc_data[t].append(0)
                     self.padc_data[t].append(0)
 
-        # Actual measured pressure per P index, taken from T0 (reference temperature).
         for p in self.cal_points:
-            if (0, p) in adc_raw:
-                self.pressure_values.append(adc_raw[(0, p)]['pressure_value'])
-            else:
-                print(f"WARNING: Missing pressure value for P{p} at T0 — using 0")
-                self.pressure_values.append(0.0)
+            if (0, p) not in adc_raw:
+                raise ValueError(f"Missing pressure value for P{p} at T0 in {self.dut_path}")
+            self.pressure_values.append(adc_raw[(0, p)]['pressure_value'])
 
         if 'DAC_DATA' not in dut_config:
             raise ValueError("DAC_DATA section not found in DUT file")

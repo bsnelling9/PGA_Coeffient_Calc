@@ -14,8 +14,8 @@ def parse_voltage_arg(arg):
 
 
 def run_single(pressure_code, serial_number, v_min_override=None, v_max_override=None,
-               dac_fs_voltage=None, p_min_override=None, p_max_override=None):
-    
+               p_min_override=None, p_max_override=None):
+
     sn_str = f"{serial_number:06d}" if isinstance(serial_number, int) else serial_number
 
     cal_input_filename = f'Cal_Input_{sn_str}.txt'
@@ -27,14 +27,13 @@ def run_single(pressure_code, serial_number, v_min_override=None, v_max_override
         v_min=v_min_override,
         v_max=v_max_override,
     )
-    
+
     cal_input_file.create_file(output_file=cal_input_filename)
 
     calculate_coefficients(
         cal_input_file=cal_input_filename,
         output_file=output_filename,
-        off_en=0,
-        dac_fs_voltage=dac_fs_voltage,
+        off_en=1,
         p_min=p_min_override,
         p_max=p_max_override,
     )
@@ -82,7 +81,7 @@ def run_batch(timestamp_str):
             print(f"ERROR processing SN {sn:06d}: {e}")
             all_ok = False
             continue
-    
+
     return all_ok
 
 def main():
@@ -91,21 +90,20 @@ def main():
     try:
         if len(args) == 2 and args[0].lower() == "log":
             success = run_batch(timestamp_str=args[1])
-        elif len(args) in (2, 4, 5, 7):
+        elif len(args) in (2, 4, 6):
             pressure_code = args[0]
             serial_number = args[1]
             v_min_override = parse_voltage_arg(args[2]) if len(args) >= 4 else None
             v_max_override = parse_voltage_arg(args[3]) if len(args) >= 4 else None
-            dac_fs_voltage = parse_voltage_arg(args[4]) if len(args) >= 5 else None
-            p_min_override = parse_voltage_arg(args[5]) if len(args) == 7 else None
-            p_max_override = parse_voltage_arg(args[6]) if len(args) == 7 else None
+            p_min_override = parse_voltage_arg(args[4]) if len(args) == 6 else None
+            p_max_override = parse_voltage_arg(args[5]) if len(args) == 6 else None
 
             run_single(pressure_code, serial_number, v_min_override, v_max_override,
-                       dac_fs_voltage, p_min_override, p_max_override)
+                       p_min_override, p_max_override)
             success = True
         else:
             print("Usage:")
-            print("  python main.py <part_number> <serial_number> [v_min v_max [dac_fs_voltage [p_min p_max]]]")
+            print("  python main.py <part_number> <serial_number> [v_min v_max [p_min p_max]]")
             print("  python main.py Log <timestamp>")
             sys.exit(2)
 

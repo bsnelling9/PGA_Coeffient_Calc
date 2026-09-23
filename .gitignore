@@ -13,7 +13,8 @@ dist/
 wheels/
 *.egg-info
 .venv
-
+*.txt
+obsolete/
 end_to_end.py
 # Specific scripts/documentation to ignore
 pga_coefficient_calculator.py
