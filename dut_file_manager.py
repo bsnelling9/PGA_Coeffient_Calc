@@ -1,69 +1,155 @@
 import os
+import configparser
 import config
 
 
 class DUTFileManager:
 
-    def __init__(self, pressure_code, serial_number, base_path=None):
+    def __init__(self, pressure_code, serial_number, base_path=None, config_path=None, adc_resolution=None,
+                 v_min=None, v_max=None, pressure_span=None, print_details=True):
+
         self.pressure_code = pressure_code
         self.serial_number = serial_number
         self.base_path = base_path or config.BASE_PATH
+        self.config_path = config_path or config.CONFIG_PATH
+        self.adc_resolution = adc_resolution or config.ADC_RESOLUTION
+        self.v_min = v_min if v_min is not None else config.V_MIN
+        self.v_max = v_max if v_max is not None else config.V_MAX
+        self.pressure_span = pressure_span or config.DEFAULT_PRESSURE_SPAN_PSI
+        self.print_details = print_details
+
         self.dut_path = os.path.join(self.base_path, pressure_code, f'{serial_number}.txt')
+        self.cal_points = None
+
+        self.tadc_data = {}
+        self.padc_data = {}
+        self.dac_data  = {}
+        self.dmm_data  = {}
+        self.dac_test_codes = []
+        self.pressure_values = []
+        self.t_points  = 0
+        self.p_points  = 0
+
         self.coefficients = {}
         self.settings = {}
 
-    def parse_cal_output(self, cal_output_file='Cal_Output.txt'):
+    def read_part_config(self):
+        config_file = os.path.join(self.config_path, f'{self.pressure_code}.ini')
 
-        self.coefficients = {}
-        self.settings = {}
+        if not os.path.exists(config_file):
+            raise FileNotFoundError(f"Part configuration file not found: {config_file}")
 
-        in_coeffs_section = False
-        in_settings_section = False
+        part_config = configparser.ConfigParser()
+        part_config.read(config_file)
 
-        with open(cal_output_file, 'r') as f:
-            lines = f.readlines()
+        if 'Default Cal' not in part_config:
+            raise ValueError(f"Default Cal section not found in {config_file}")
 
-        for line in lines:
-            line = line.strip()
+        p_cal_points = part_config['Default Cal']['P Cal Points'].strip('"')
+        self.cal_points = [int(x.strip()) for x in p_cal_points.split(',')]
 
-            if 'Calibration Settings' in line:
-                in_settings_section = True
-                in_coeffs_section = False
+        if part_config.has_option('Default Cal', 'Pressure Span PSI'):
+            self.pressure_span = float(part_config['Default Cal']['Pressure Span PSI'])
+
+        if part_config.has_option('Default Cal', 'V Min'):
+            self.v_min = float(part_config['Default Cal']['V Min'])
+
+        if part_config.has_option('Default Cal', 'V Max'):
+            self.v_max = float(part_config['Default Cal']['V Max'])
+
+        if self.print_details:
+            print(f"Read part config: {config_file}")
+            print(f"P Cal Points: {self.cal_points}")
+            print(f"Pressure Span (psi): {self.pressure_span}, V Min: {self.v_min}, V Max: {self.v_max}")
+
+    def read_dut_file(self):
+        if not os.path.exists(self.dut_path):
+            raise FileNotFoundError(f"DUT file not found: {self.dut_path}")
+
+        dut_config = configparser.ConfigParser()
+        dut_config.read(self.dut_path)
+
+        if 'ADC_DATA' not in dut_config:
+            raise ValueError("ADC_DATA section not found in DUT file")
+
+        adc_raw = {}
+        for key, value in dut_config['ADC_DATA'].items():
+            key = key.upper()
+            parts = value.strip('"').split('\t')
+            if len(parts) == 4:
+                t_idx = int(key[1])
+                p_idx = int(key[3])
+                adc_raw[(t_idx, p_idx)] = {
+                    'tadc': int(parts[1]),
+                    'padc': int(parts[3]),
+                    'pressure_value': float(parts[2]),
+                }
+
+        max_t = max(k[0] for k in adc_raw.keys()) + 1
+        max_p = max(k[1] for k in adc_raw.keys()) + 1
+        self.t_points = max_t
+
+        if self.cal_points is None:
+            self.cal_points = list(range(max_p))
+
+        self.p_points = len(self.cal_points)
+
+        for t in range(max_t):
+            self.tadc_data[t] = []
+            self.padc_data[t] = []
+
+            for p in self.cal_points:
+                if (t, p) in adc_raw:
+                    self.tadc_data[t].append(adc_raw[(t, p)]['tadc'])
+                    self.padc_data[t].append(adc_raw[(t, p)]['padc'])
+                else:
+                    print(f"WARNING: Missing data point T{t}P{p} — using 0")
+                    self.tadc_data[t].append(0)
+                    self.padc_data[t].append(0)
+
+        for p in self.cal_points:
+            if (0, p) not in adc_raw:
+                raise ValueError(f"Missing pressure value for P{p} at T0 in {self.dut_path}")
+            self.pressure_values.append(adc_raw[(0, p)]['pressure_value'])
+
+        if 'DAC_DATA' not in dut_config:
+            raise ValueError("DAC_DATA section not found in DUT file")
+
+        for key, value in dut_config['DAC_DATA'].items():
+            key_upper = key.upper()
+
+            # Catch DAC_Test_Codes directly
+            if key_upper == 'DAC_TEST_CODES':
+                parts = value.strip('"').split('\t')
+                self.dac_test_codes = [v.strip() for v in parts if v.strip()]
                 continue
 
-            if 'Name' in line and 'Float Value' in line:
-                in_coeffs_section = True
-                in_settings_section = False
-                continue
+            if key_upper.startswith('T') and len(key_upper) >= 2:
+                parts = value.strip('"').split('\t')
 
-            if 'Calibration Point Comparison' in line:
-                in_coeffs_section = False
-                in_settings_section = False
-                continue
+                if '.DMM' in key_upper:
+                    t_idx = int(key_upper[1])
+                    self.dmm_data[t_idx] = [v.strip() for v in parts]
 
-            if not line or line.startswith('-') or line.startswith('='):
-                continue
+                elif '.' not in key_upper and len(key_upper) == 2:
+                    t_idx = int(key_upper[1])
+                    dac_values = []
+                    for val in parts:
+                        val = val.strip()
+                        try:
+                            dac_values.append(format(int(val), 'X'))
+                        except ValueError:
+                            dac_values.append(val)
+                    self.dac_data[t_idx] = dac_values
 
-            if in_settings_section:
-                parts = line.split()
-                if len(parts) >= 3 and parts[0] in config.VALID_SETTINGS:
-                    self.settings[parts[0]] = {
-                        'value': parts[1],
-                        'hex':   parts[2].replace('0x', '')
-                    }
-
-            if in_coeffs_section:
-                parts = line.split()
-                if len(parts) >= 3 and parts[0] in config.VALID_COEFFICIENTS:
-                    self.coefficients[parts[0]] = parts[2].replace('0x', '')
-
-        print(f"Parsed {len(self.coefficients)} coefficients and {len(self.settings)} settings from {cal_output_file}")
-
-        return self.coefficients, self.settings
+        if self.print_details:
+            print(f"Read DUT file: {self.dut_path}")
+            print(f"Found {self.t_points}T x {self.p_points}P calibration points")
+            print(f"Pressure values (T0): {self.pressure_values}")
 
     def write_coefficients(self, label=None):
         if not self.coefficients:
-            print("ERROR: No coefficients to write. Call parse_cal_output() first.")
+            print("ERROR: No coefficients to write. Call calculate_coefficients() first.")
             return
 
         if not os.path.exists(self.dut_path):
@@ -103,7 +189,8 @@ class DUTFileManager:
         with open(self.dut_path, 'w') as f:
             f.write(content.rstrip() + '\n' + settings_section + coeff_section)
 
-        print(f"Settings and coefficients written to {self.dut_path} under {settings_header}/{coeff_header}")
+        if self.print_details:
+            print(f"Settings and coefficients written to {self.dut_path} under {settings_header}/{coeff_header}")
 
     def print_coefficients(self):
         if not self.coefficients:

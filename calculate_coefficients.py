@@ -1,7 +1,7 @@
-import configparser
-import numpy as np
 import math
-import sys
+
+import numpy as np
+
 import config
 
 
@@ -13,16 +13,6 @@ def signed_int_to_hex24(value):
     return f"{value:06X}"
 
 
-def parse_value(s):
-    s = s.strip()
-    if s.startswith('0x') or s.startswith('0X'):
-        return int(s, 16)
-    try:
-        return int(s)
-    except ValueError:
-        return int(s, 16)
-
-
 def gain_for_span(v_min, v_max):
     gain = config.SPAN_TO_GAIN.get((v_min, v_max))
     if gain is None:
@@ -30,7 +20,7 @@ def gain_for_span(v_min, v_max):
     return gain
 
 
-def interp_with_extrapolation(x, xp, fp):
+def interpolate_with_extrapolation(x, xp, fp):
     x = np.atleast_1d(np.asarray(x, dtype=np.float64))
     xp = np.asarray(xp, dtype=np.float64)
     fp = np.asarray(fp, dtype=np.float64)
@@ -50,12 +40,12 @@ def interp_with_extrapolation(x, xp, fp):
     return result
 
 
-def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain, padc_offset,
-                  names, coeffs, eeprom, tadc, padc, dac_target, norm_data,
-                  current_gain=None, target_gain=None):
+def print_results(t_points, p_points, offset_enable, tadc_gain, tadc_offset, padc_gain, padc_offset,
+                  coefficient_labels, coefficients, eeprom_coefficients, tadc, padc, dac_target,
+                  normalization_scale, current_gain=None, target_gain=None):
 
     print('=' * 80)
-    print(f'CALIBRATION SUMMARY - {T_points}T{P_points}P Configuration')
+    print(f'CALIBRATION SUMMARY - {t_points}T{p_points}P Configuration')
     print('=' * 80)
     print()
     if current_gain is not None and target_gain is not None:
@@ -66,7 +56,7 @@ def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain,
     print('Calibration Settings:')
     print(f"{'Setting':<20} {'Value':<14} {'EEPROM (Hex)':>12}")
     print('-' * 48)
-    print(f"{'OFF_EN':<20} {off_en:<14} {'0x{:02X}'.format(off_en):>12}")
+    print(f"{'OFF_EN':<20} {offset_enable:<14} {'0x{:02X}'.format(offset_enable):>12}")
     print(f"{'TADC_GAIN':<20} {tadc_gain:<14} {'0x{:06X}'.format(tadc_gain & 0xFFFFFF):>12}")
     print(f"{'TADC_OFFSET':<20} {tadc_offset:<14} {'0x{:06X}'.format(tadc_offset & 0xFFFFFF):>12}")
     print(f"{'PADC_GAIN':<20} {padc_gain:<14} {'0x{:06X}'.format(padc_gain & 0xFFFFFF):>12}")
@@ -76,8 +66,8 @@ def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain,
     print('Coefficients:')
     print(f"{'Name':<6} {'Float Value':>16}   {'EEPROM (Hex)':>12}")
     print('-' * 38)
-    for name, c, e in zip(names, coeffs, eeprom):
-        print(f"{name:<6} {c:>16.6e}     0x{signed_int_to_hex24(e)}")
+    for label, coefficient, eeprom_value in zip(coefficient_labels, coefficients, eeprom_coefficients):
+        print(f"{label:<6} {coefficient:>16.6e}     0x{signed_int_to_hex24(eeprom_value)}")
 
     print()
     print('Calibration Point Comparison:')
@@ -90,210 +80,194 @@ def print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain,
     dac_target_flat = dac_target.flatten()
 
     errors = []
-    idx = 0
-    for t in range(T_points):
-        for pr in range(P_points):
-            tadc_val = tadc_flat[idx]
-            padc_val = padc_flat[idx]
-            expected = int(round(dac_target_flat[idx]))
+    point_index = 0
+    for t_index in range(t_points):
+        for p_index in range(p_points):
+            tadc_value = tadc_flat[point_index]
+            padc_value = padc_flat[point_index]
+            expected = int(round(dac_target_flat[point_index]))
 
-            if off_en:
-                ts = (tadc_val + tadc_offset) * tadc_gain
-                ps = (padc_val + padc_offset) * padc_gain
+            if offset_enable:
+                tadc_scaled = (tadc_value + tadc_offset) * tadc_gain
+                padc_scaled = (padc_value + padc_offset) * padc_gain
             else:
-                ts = tadc_val * tadc_gain + tadc_offset
-                ps = padc_val * padc_gain + padc_offset
+                tadc_scaled = tadc_value * tadc_gain + tadc_offset
+                padc_scaled = padc_value * padc_gain + padc_offset
 
-            tn = ts / norm_data
-            pn = ps / norm_data
+            tadc_norm = tadc_scaled / normalization_scale
+            padc_norm = padc_scaled / normalization_scale
 
-            vec = []
-            for j in range(P_points):
-                for i in range(T_points):
-                    vec.append((tn ** i) * (pn ** j))
-            vec = np.array(vec)
+            basis = []
+            for j in range(p_points):
+                for i in range(t_points):
+                    basis.append((tadc_norm ** i) * (padc_norm ** j))
+            basis = np.array(basis)
 
-            computed = int(round(np.dot(coeffs, vec) * norm_data))
+            computed = int(round(np.dot(coefficients, basis) * normalization_scale))
             error = abs(expected - computed)
             errors.append(error)
 
-            print(f"T{t}P{pr}    0x{signed_int_to_hex24(int(tadc_val))}   0x{signed_int_to_hex24(int(padc_val))}   0x{signed_int_to_hex24(expected)}   0x{signed_int_to_hex24(computed)}   {error:<6}")
-            idx += 1
+            print(f"T{t_index}P{p_index}    0x{signed_int_to_hex24(int(tadc_value))}   "
+                  f"0x{signed_int_to_hex24(int(padc_value))}   0x{signed_int_to_hex24(expected)}   "
+                  f"0x{signed_int_to_hex24(computed)}   {error:<6}")
+            point_index += 1
 
     print()
     print('Error Statistics:')
-    max_err  = max(errors)
-    mean_err = sum(errors) / len(errors)
-    print(f"  Max Error:   {max_err:>6} codes  ({max_err * 1e6 / norm_data:>6.1f} ppm FSR)")
-    print(f"  Mean Error:  {mean_err:>6.2f} codes  ({mean_err * 1e6 / norm_data:>6.1f} ppm FSR)")
+    max_error = max(errors)
+    mean_error = sum(errors) / len(errors)
+    print(f"  Max Error:   {max_error:>6} codes  ({max_error * 1e6 / normalization_scale:>6.1f} ppm FSR)")
+    print(f"  Mean Error:  {mean_error:>6.2f} codes  ({mean_error * 1e6 / normalization_scale:>6.1f} ppm FSR)")
 
-def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_Cal_Output.txt', off_en=0,
-                            dac_fs_voltage=None, p_min=None, p_max=None,
-                            current_v_min=None, current_v_max=None):
-    cal_config = configparser.ConfigParser()
-    cal_config.read(cal_input_file)
 
-    T_points = int(cal_config['General']['T_points'])
-    P_points = int(cal_config['General']['P_points'])
-    adc_res  = int(cal_config['General']['adc_resolution'])
+def calculate_coefficients(dut, p_min=None, p_max=None, dac_fs_voltage=None,
+                           current_v_min=None, current_v_max=None, print_details=True):
 
-    v_min = float(cal_config['General'].get('v_min', config.V_MIN))
-    v_max = float(cal_config['General'].get('v_max', config.V_MAX))
+    t_points = dut.t_points
+    p_points = dut.p_points
+    adc_resolution_bits = dut.adc_resolution
 
-    resolved_current_v_min = current_v_min if current_v_min is not None else config.V_MIN
-    resolved_current_v_max = current_v_max if current_v_max is not None else config.V_MAX
+    v_min = dut.v_min
+    v_max = dut.v_max
+
+    current_v_min_used = current_v_min if current_v_min is not None else config.V_MIN
+    current_v_max_used = current_v_max if current_v_max is not None else config.V_MAX
 
     target_gain = gain_for_span(v_min, v_max)
-    current_gain = gain_for_span(resolved_current_v_min, resolved_current_v_max)
+    current_gain = gain_for_span(current_v_min_used, current_v_max_used)
 
-    fs_voltage_bracket = dac_fs_voltage if dac_fs_voltage is not None else config.V_MAX
+    bracket_fs_voltage = dac_fs_voltage if dac_fs_voltage is not None else config.V_MAX
 
-    pressure_values = [float(x.strip()) for x in cal_config['Pressure']['Values'].strip('"').split(',')]
+    pressure_values = list(dut.pressure_values)
 
-    p_min_actual = p_min if p_min is not None else min(pressure_values)
-    p_max_actual = p_max if p_max is not None else max(pressure_values)
+    p_min_used = p_min if p_min is not None else min(pressure_values)
+    p_max_used = p_max if p_max is not None else max(pressure_values)
 
-    if p_max_actual <= p_min_actual:
-        raise ValueError(f"p_max ({p_max_actual}) must be greater than p_min ({p_min_actual})")
+    if p_max_used <= p_min_used:
+        raise ValueError(f"p_max ({p_max_used}) must be greater than p_min ({p_min_used})")
 
-    min_code = -(2 ** (adc_res - 1))
-    max_code = (2 ** (adc_res - 1)) - 1
+    adc_min_code = -(2 ** (adc_resolution_bits - 1))
+    adc_max_code = (2 ** (adc_resolution_bits - 1)) - 1
 
-    norm_data  = 2 ** (adc_res - 2)
-    norm_coeff = 2 ** 30
+    normalization_scale = 2 ** (adc_resolution_bits - 2)
+    coefficient_fixed_point_scale = 2 ** 30
 
-    tadc, padc, dac = [], [], []
-    for i in range(T_points):
-        t_row = [parse_value(x) for x in cal_config['TADC'][f'T{i}'][1:-1].split(',')]
-        p_row = [parse_value(x) for x in cal_config['PADC'][f'T{i}'][1:-1].split(',')]
-        d_row = [int(x.strip(), 16) for x in cal_config['DAC'][f'T{i}'][1:-1].split(',')]
-        for v in t_row + p_row:
-            if v < min_code or v > max_code:
-                raise ValueError(f"T{i}: value {v} exceeds {adc_res}-bit ADC range [{min_code}, {max_code}]")
+    tadc, padc, dac_codes = [], [], []
 
-        tadc.append(t_row)
-        padc.append(p_row)
-        dac.append(d_row)
+    for t_index in range(t_points):
+        tadc_row = list(dut.tadc_data[t_index])
+        padc_row = list(dut.padc_data[t_index])
+        dac_row = [int(x, 16) for x in dut.dac_data[t_index]]
+        for value in tadc_row + padc_row:
+            if value < adc_min_code or value > adc_max_code:
+                raise ValueError(f"T{t_index}: value {value} exceeds {adc_resolution_bits}-bit ADC range "
+                                 f"[{adc_min_code}, {adc_max_code}]")
+
+        tadc.append(tadc_row)
+        padc.append(padc_row)
+        dac_codes.append(dac_row)
 
     tadc = np.array(tadc, dtype=np.float64)
     padc = np.array(padc, dtype=np.float64)
-    dac  = np.array(dac, dtype=np.float64)
+    dac_codes = np.array(dac_codes, dtype=np.float64)
     pressure_values = np.array(pressure_values, dtype=np.float64)
 
-    sort_idx = np.argsort(pressure_values)
-    pressure_sorted = pressure_values[sort_idx]
+    sort_order = np.argsort(pressure_values)
+    pressure_sorted = pressure_values[sort_order]
 
-    for p_idx in range(P_points):
-        pv = pressure_values[p_idx]
-        boundary = None
-        if pv > p_max_actual:
-            boundary = p_max_actual
-        elif pv < p_min_actual:
-            boundary = p_min_actual
+    for p_index in range(p_points):
+        pressure = pressure_values[p_index]
+        clamped_pressure = None
+        if pressure > p_max_used:
+            clamped_pressure = p_max_used
+        elif pressure < p_min_used:
+            clamped_pressure = p_min_used
 
-        if boundary is not None:
-
-            for t_idx in range(T_points):
-                padc[t_idx, p_idx] = np.interp(boundary, pressure_sorted, padc[t_idx][sort_idx])
-                tadc[t_idx, p_idx] = np.interp(boundary, pressure_sorted, tadc[t_idx][sort_idx])
-            print(f"P{p_idx}: pressure {pv} outside new span [{p_min_actual}, {p_max_actual}] - "
-                  f"replaced with PADC/TADC interpolated at {boundary} psi")
-            pressure_values[p_idx] = boundary
+        if clamped_pressure is not None:
+            for t_index in range(t_points):
+                padc[t_index, p_index] = np.interp(clamped_pressure, pressure_sorted, padc[t_index][sort_order])
+                tadc[t_index, p_index] = np.interp(clamped_pressure, pressure_sorted, tadc[t_index][sort_order])
+            if print_details:
+                print(f"P{p_index}: pressure {pressure} outside new span [{p_min_used}, {p_max_used}] - "
+                      f"replaced with PADC/TADC interpolated at {clamped_pressure} psi")
+            pressure_values[p_index] = clamped_pressure
 
     padc_min = np.min(padc)
     padc_max = np.max(padc)
     tadc_min = np.min(tadc)
     tadc_max = np.max(tadc)
 
-    # this was the old way when I though centering it would not work
-    # padc_zero_anchor = np.min(padc[:, 0])
     padc_center = (padc_min + padc_max) / 2
     tadc_center = (tadc_min + tadc_max) / 2
 
-    if off_en:
+    if config.OFF_EN:
         padc_offset = -int(padc_center)
-        tadc_offset = -math.floor(tadc_center)       
+        tadc_offset = -math.floor(tadc_center)
 
         padc_abs_max = max(abs(padc_min + padc_offset), abs(padc_max + padc_offset))
         tadc_abs_max = max(abs(tadc_min + tadc_offset), abs(tadc_max + tadc_offset))
 
-        padc_gain = int(np.floor((2**(adc_res-1) - 1) / padc_abs_max))
-        tadc_gain = int(np.floor((2**(adc_res-1) - 1) / tadc_abs_max))
-        tadc_gain = min(tadc_gain, config.TADC_GAIN_MAX) #caps the tadc gain to avoid saturation
+        padc_gain = int(np.floor(adc_max_code / padc_abs_max))
+        tadc_gain = int(np.floor(adc_max_code / tadc_abs_max))
+        # Cap the TADC gain to avoid saturation
+        tadc_gain = min(tadc_gain, config.TADC_GAIN_MAX)
 
-        T_norm = ((tadc + tadc_offset) * tadc_gain) / norm_data
-        P_norm = ((padc + padc_offset) * padc_gain) / norm_data
+        tadc_norm = ((tadc + tadc_offset) * tadc_gain) / normalization_scale
+        padc_norm = ((padc + padc_offset) * padc_gain) / normalization_scale
     else:
-
         tadc_abs_max = max(abs(tadc_min), abs(tadc_max))
         padc_abs_max = max(abs(padc_min), abs(padc_max))
 
-        padc_gain = int(np.floor((2**(adc_res-1) - 1) / padc_abs_max))
-        tadc_gain = int(np.floor((2**(adc_res-1) - 1) / tadc_abs_max))
+        padc_gain = int(np.floor(adc_max_code / padc_abs_max))
+        tadc_gain = int(np.floor(adc_max_code / tadc_abs_max))
 
         tadc_offset = -math.floor(tadc_gain * tadc_center)
-
         padc_offset = -int(padc_gain * padc_center)
 
-        T_norm = (tadc * tadc_gain + tadc_offset) / norm_data
-        P_norm = (padc * padc_gain + padc_offset) / norm_data
+        tadc_norm = (tadc * tadc_gain + tadc_offset) / normalization_scale
+        padc_norm = (padc * padc_gain + padc_offset) / normalization_scale
 
-    dac_fit = None
-    dac_dmm = None
+    has_dac_data = bool(dut.dmm_data or dut.dac_test_codes)
 
-    if config.ENABLE_DAC_CORRECTION and 'DAC_DATA' in cal_config:
-        dac_dmm_rows = []
+    if config.ENABLE_DAC_CORRECTION and has_dac_data:
+        measured_dac_voltages = []
+        
+        for t_index in range(t_points):
+            measured_dac_voltages.append([float(x.strip()) for x in dut.dmm_data[t_index]])
+        measured_dac_voltages = np.array(measured_dac_voltages, dtype=np.float64)
 
-        for i in range(T_points):
-            raw_val = cal_config['DAC_DATA'][f'T{i}'].strip('"')
-            v_row = [float(x.strip()) for x in raw_val.split(',')]
-            dac_dmm_rows.append(v_row)
+        voltage_span = v_max - v_min
+        dac_target = np.zeros((t_points, p_points))
 
-        dac_dmm = np.array(dac_dmm_rows, dtype=np.float64)
+        for t_index in range(t_points):
+            # Fit measured voltage = a*code^2 + b*code + c, then solve for the code at each target voltage
+            a, b, c = np.polyfit(dac_codes[t_index], measured_dac_voltages[t_index], 2)
 
-        fs_voltage = v_max - v_min
+            for p_index in range(p_points):
+                target_voltage = v_min + (p_index / (p_points - 1)) * voltage_span
+                discriminant = b**2 - 4*a*(c - target_voltage)
 
-        dac_fit = []
-        dac_corrected = np.zeros((T_points, P_points))
-
-        for t in range(T_points):
-            codes_row = dac[t]
-            volts_row = dac_dmm[t]
-
-            p_coeff = np.polyfit(codes_row, volts_row, 2)
-            dac_fit.append(p_coeff)
-
-            for p in range(P_points):
-                ideal_v = v_min + (p / (P_points - 1)) * fs_voltage
-
-                a, b, c = p_coeff
-                c_prime = c - ideal_v
-                discriminant = b**2 - 4*a*c_prime
-
-                if discriminant >= 0 and a != 0:
+                if a == 0:
+                    corrected_code = (target_voltage - c) / b
+                elif discriminant >= 0:
                     corrected_code = (-b + np.sqrt(discriminant)) / (2*a)
                 else:
-                    corrected_code = (ideal_v - b) / a
+                    raise ValueError(f"T{t_index}P{p_index}: no real DAC code gives {target_voltage} V")
 
-                dac_corrected[t][p] = corrected_code
-
-        dac_target = dac_corrected
-        D_norm = dac_corrected / norm_data
+                dac_target[t_index][p_index] = corrected_code
     else:
-        n_test_codes = dac.shape[1]
+        dac_test_code_count = dac_codes.shape[1]
 
-        if n_test_codes == P_points:
-            cal_col_indices = list(range(P_points))
-            if 'DAC_DATA' in cal_config and 'DAC_Test_Codes' in cal_config['DAC_DATA']:
-                ideal_codes_all = [int(x.strip()) for x in
-                                    cal_config['DAC_DATA']['DAC_Test_Codes'].strip('"').split(',')]
-                dac_target_row = np.array(ideal_codes_all)[cal_col_indices]
+        if dac_test_code_count == p_points:
+            if dut.dac_test_codes:
+                dac_test_codes = [int(x.strip()) for x in dut.dac_test_codes]
+                dac_target_row = np.array(dac_test_codes)
             else:
-                dac_target_row = dac[0][cal_col_indices]
+                dac_target_row = dac_codes[0]
         else:
             target_voltages = [
-                v_min + ((pv - p_min_actual) / (p_max_actual - p_min_actual)) * (v_max - v_min)
-                for pv in pressure_values
+                v_min + ((pressure - p_min_used) / (p_max_used - p_min_used)) * (v_max - v_min)
+                for pressure in pressure_values
             ]
 
             if target_gain != current_gain:
@@ -302,68 +276,69 @@ def calculate_coefficients(cal_input_file='Cal_Input.txt', output_file='Brodie_C
                 # target_gain. Use the characterized sweep for the target
                 # gain instead of the production-test bracket data.
                 sweep = config.DAC_CODE_VOLTAGE_SWEEPS.get(target_gain)
-
                 if sweep is None:
                     raise ValueError(f"No fixed voltage sweep for gain {target_gain}")
-                codes_sorted = sorted(sweep.keys())
-                xp = np.array([sweep[c] for c in codes_sorted], dtype=np.float64)  # voltages
-                fp = np.array(codes_sorted, dtype=np.float64)                      # codes
+
+                sweep_codes = sorted(sweep.keys())
+                xp = np.array([sweep[code] for code in sweep_codes], dtype=np.float64)
+                fp = np.array(sweep_codes, dtype=np.float64)
             else:
-               
-                if n_test_codes != len(config.DAC_TEST_CODE_FRACTIONS):
+                if dac_test_code_count != len(config.DAC_TEST_CODE_FRACTIONS):
                     raise ValueError(
-                        f"Don't know the bracket-voltage layout for {n_test_codes} DAC "
-                        f"columns - update DAC_TEST_CODE_FRACTIONS above, or store the "
-                        f"mapping explicitly in Cal_Input.txt."
+                        f"Don't know the bracket-voltage layout for {dac_test_code_count} DAC "
+                        f"columns - update DAC_TEST_CODE_FRACTIONS in config."
                     )
 
-                if 'DAC_DATA' not in cal_config or 'DAC_Test_Codes' not in cal_config['DAC_DATA']:
+                if not dut.dac_test_codes:
                     raise ValueError("DAC_Test_Codes required for bracket-based targeting.")
 
-                ideal_codes_all = np.array([int(x.strip()) for x in
-                                    cal_config['DAC_DATA']['DAC_Test_Codes'].strip('"').split(',')], dtype=np.float64)
+                dac_test_codes = np.array([int(x.strip()) for x in dut.dac_test_codes], dtype=np.float64)
 
-                bracket_voltages = np.array(config.DAC_TEST_CODE_FRACTIONS) * fs_voltage_bracket
-                xp, fp = bracket_voltages, ideal_codes_all
+                bracket_voltages = np.array(config.DAC_TEST_CODE_FRACTIONS) * bracket_fs_voltage
+                xp, fp = bracket_voltages, dac_test_codes
 
-            dac_target_row = interp_with_extrapolation(target_voltages, xp, fp)
+            dac_target_row = interpolate_with_extrapolation(target_voltages, xp, fp)
 
-        dac_target = np.tile(dac_target_row, (T_points, 1))
-        D_norm = dac_target / norm_data
+        dac_target = np.tile(dac_target_row, (t_points, 1))
 
-    T_flat = T_norm.flatten()
-    P_flat = P_norm.flatten()
-    D_flat = D_norm.flatten()
+    dac_norm = dac_target / normalization_scale
 
-    coeff_vars = ['h', 'g', 'n', 'm']
-    coeff_label = []
-    coeff_value = []
-    for j in range(P_points):
-        for i in range(T_points):
-            coeff_label.append(f"{coeff_vars[j]}{i}")
-            coeff_value.append((T_flat ** i) * (P_flat ** j))
+    tadc_norm_flat = tadc_norm.flatten()
+    padc_norm_flat = padc_norm.flatten()
+    dac_norm_flat = dac_norm.flatten()
 
-    A = np.column_stack(coeff_value)
+    coefficient_letters = ['h', 'g', 'n', 'm']
+    coefficient_labels = []
+    basis_columns = []
+    for j in range(p_points):
+        for i in range(t_points):
+            coefficient_labels.append(f"{coefficient_letters[j]}{i}")
+            basis_columns.append((tadc_norm_flat ** i) * (padc_norm_flat ** j))
 
-    coeffs, _, _, _ = np.linalg.lstsq(A, D_flat, rcond=None)
-    eeprom = []
-    for coefficient in coeffs:
-        fixed_point_value = coefficient * norm_coeff
-        eeprom.append(int(round(fixed_point_value)))
+    design_matrix = np.column_stack(basis_columns)
 
-    print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain, padc_offset,
-                  coeff_label, coeffs, eeprom, tadc, padc, dac_target, norm_data,
-                  current_gain=current_gain, target_gain=target_gain)
+    coefficients, _, _, _ = np.linalg.lstsq(design_matrix, dac_norm_flat, rcond=None)
+    eeprom_coefficients = [int(round(coefficient * coefficient_fixed_point_scale))
+                           for coefficient in coefficients]
 
-    with open(output_file, 'w') as f:
-        sys.stdout = f
-        print_results(T_points, P_points, off_en, tadc_gain, tadc_offset, padc_gain, padc_offset,
-                      coeff_label, coeffs, eeprom, tadc, padc, dac_target, norm_data,
-                      current_gain=current_gain, target_gain=target_gain)
-        sys.stdout = sys.__stdout__
+    if print_details:
+        print_results(t_points, p_points, config.OFF_EN, tadc_gain, tadc_offset, padc_gain, padc_offset,
+                      coefficient_labels, coefficients, eeprom_coefficients, tadc, padc, dac_target,
+                      normalization_scale, current_gain=current_gain, target_gain=target_gain)
 
-    print(f"Output written to {output_file}")
+    settings = {
+        'OFF_EN':      {'value': str(config.OFF_EN), 'hex': f"{config.OFF_EN:02X}"},
+        'TADC_GAIN':   {'value': str(tadc_gain),     'hex': f"{tadc_gain & 0xFFFFFF:06X}"},
+        'TADC_OFFSET': {'value': str(tadc_offset),   'hex': f"{tadc_offset & 0xFFFFFF:06X}"},
+        'PADC_GAIN':   {'value': str(padc_gain),     'hex': f"{padc_gain & 0xFFFFFF:06X}"},
+        'PADC_OFFSET': {'value': str(padc_offset),   'hex': f"{padc_offset & 0xFFFFFF:06X}"},
+    }
+    settings = {name: data for name, data in settings.items() if name in config.VALID_SETTINGS}
 
+    coefficients_hex = {
+        label: signed_int_to_hex24(eeprom_value)
+        for label, eeprom_value in zip(coefficient_labels, eeprom_coefficients)
+        if label in config.VALID_COEFFICIENTS
+    }
 
-if __name__ == "__main__":
-    calculate_coefficients()
+    return coefficients_hex, settings

@@ -20,6 +20,10 @@ DAC_TEST_CODE_FRACTIONS = [0, 1/3, 1/2, 2/3, 3/4, 1, 1.1]
 #Because of Off_En = 1, the tadc_gain was saturating. I need to set a max gain
 TADC_GAIN_MAX = 3
 
+# this is the OFF_ENABLE flag for the PGA305 1 = True, 0 = False. This is used in the calculation of the coefficients. 
+# The PGA305 datasheet says that this should be set to 1 for high offset sensors which match the bridge were using.
+OFF_EN = 1
+
 SPAN_TO_GAIN = {
     (0.0, 10.0): 10.0,
     (0.5, 4.5):  4.0,

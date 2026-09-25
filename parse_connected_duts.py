@@ -57,5 +57,6 @@ if __name__ == "__main__":
 
     sensors = parse_connected_duts(file_path)
     print(f"Found {len(sensors)} connected sensor(s):")
+    
     for channel, s in sorted(sensors.items()):
         print(f"  Channel {channel:>3}  |  SN: {s['serial_number']:>6}  |  Pressure Code: {s['pressure_code']}")
